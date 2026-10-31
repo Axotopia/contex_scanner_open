@@ -1,0 +1,61 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Large scan artifacts, captures & raw streams
+scans_output/
+*.rec
+*.pcap
+*.pcapng
+*.etl
+*.tif
+*.tiff
+*.bin
+*.npy
+*.npz
+*.cdf
+*.pkl
+*.pickle
+*.jsonl
+
+# Logs & session dumps
+*.log
+
+# Environment & credentials
+.env
+.env.*
+*.pem
+*.key
+*.crt
+*.pfx
+*.p12
+.keys/
+
+# Operating System Files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDEs and Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Vendor installers / extracted assets
+installers/
+extracted/
+sheets/
+reference/

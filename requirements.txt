@@ -1,0 +1,25 @@
+# Contex Studio WebUI / REST runtime
+numpy>=2.0
+pillow>=11
+fastapi>=0.115
+uvicorn>=0.30
+httpx>=0.27
+pydantic>=2.7
+
+# Required for WebSocket support. Without one of websockets/wsproto, uvicorn
+# logs "No supported WebSocket library detected" and rejects every
+# /ws/events upgrade, so live-scan progress and auto-load of completed scans
+# are silently disabled in the WebUI.
+websockets>=13
+
+# Optional: only needed for `python -m ctx mcp` (MCP server transport).
+# mcp>=1.0
+
+# Optional: NVIDIA CUDA acceleration for the IT8 colour transform (~10-12x on
+# the GPU stages). Requires an NVIDIA GPU, a working driver and the CUDA 12
+# runtime; on Ubuntu:
+#   python3 -m pip install cupy-cuda12x
+# If omitted, or without a usable GPU/driver, the app uses the multithreaded
+# CPU path and logs which backend it selected. Peak VRAM is bounded by
+# CTX_CUDA_VRAM_BUDGET_GIB (default 2.0).
+# cupy-cuda12x>=13.0

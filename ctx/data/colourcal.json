@@ -1,0 +1,68 @@
+{
+ "schema": "scanner-colour/it8-official-v1",
+ "reference": "extracted/wide_payload/TargetDir_-_IT8/R170829.it8",
+ "sheet": {
+  "pn": "6779G014",
+  "charge": "R170829",
+  "box": [
+   378,
+   2384,
+   838,
+   2300
+  ],
+  "mosaic": [
+   581,
+   2264,
+   1011,
+   1942
+  ],
+  "white_band": [
+   2795,
+   3545
+  ],
+  "black_band": [
+   3861,
+   4766
+  ]
+ },
+ "gamma": 0.9500000000000002,
+ "matrix": [
+  [
+   0.11322811438366792,
+   0.4322647773344695,
+   0.7612407683918514
+  ],
+  [
+   -0.09303829526210651,
+   1.169195814530428,
+   0.30906034542018596
+  ],
+  [
+   1.6102720835087796,
+   -0.3268174263141359,
+   0.013737913450484529
+  ]
+ ],
+ "offset": [
+  -0.06568975064203142,
+  -0.06342915535631732,
+  -0.08663948754950501
+ ],
+ "fit_capture": "analysis/fresh/official-cal-1.rec",
+ "error": {
+  "mean_abs_lab": [
+   0.8253557893283013,
+   1.92853840633862,
+   2.2435675313191634
+  ],
+  "dE76_mean": 3.64212251745504,
+  "dE76_median": 2.3031731593322142,
+  "dE76_p95": 10.149237892531533,
+  "dE76_max": 27.84427864131546,
+  "n_under_3": 161,
+  "n_under_6": 211,
+  "n_over_10": 14,
+  "n": 264
+ },
+ "note": "camera 1 is the reference; cameras 2-5 are matched on the sheet's white and black bands per column; the matrix residual concentrates in saturated blues"
+}

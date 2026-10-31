@@ -1,0 +1,922 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Open.NEXT — Contex Scan AI Studio (MCP)</title>
+  <link rel="stylesheet" href="/static/styles.css?v=1793238200" />
+</head>
+<body>
+
+  <!-- Top Hardware Telemetry & Header -->
+  <header class="topbar">
+    <div class="brand">
+      <!-- Open.NEXT Custom Geometric Aperture & Wave Scan Logo -->
+      <div class="brand-logo-wrap" title="Open.NEXT Contex Scan AI Studio">
+        <svg class="brand-logo-svg" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="onGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stop-color="#38bdf8" />
+              <stop offset="50%" stop-color="#6366f1" />
+              <stop offset="100%" stop-color="#ec4899" />
+            </linearGradient>
+            <linearGradient id="scanBeam" x1="0%" y1="0%" x2="100%" y2="0%">
+              <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.1" />
+              <stop offset="50%" stop-color="#38bdf8" stop-opacity="1" />
+              <stop offset="100%" stop-color="#818cf8" stop-opacity="0.1" />
+            </linearGradient>
+          </defs>
+          <!-- Hexagon Frame -->
+          <polygon points="16,3 28,9.5 28,22.5 16,29 4,22.5 4,9.5" stroke="url(#onGrad)" stroke-width="2.2" stroke-linejoin="round" fill="rgba(14,21,36,0.6)" />
+          <!-- Aperture / Next Chevron Wave -->
+          <path d="M11 10L17 16L11 22" stroke="#38bdf8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M16 10L22 16L16 22" stroke="#a855f7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          <!-- Scanning Laser Line -->
+          <line x1="6" y1="16" x2="26" y2="16" stroke="url(#scanBeam)" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+      </div>
+      <div class="brand-details">
+        <!-- Full-height wordmark (matches the logo), then the badge with the
+             hardware telemetry directly beneath it. -->
+        <span class="brand-name-open">Open<span class="brand-dot">.</span>NEXT</span>
+        <div class="brand-meta-col">
+          <span class="badge-sub">Contex Scan Studio MCP</span>
+          <div class="hw-meta">
+            <span id="hw-ip">IP: 0.0.0.0</span>
+            <span class="hw-sep">/</span>
+            <span id="hw-model">Model: HD Ultra i4250s</span>
+            <span class="hw-sep">/</span>
+            <span id="hw-serial">S/N: UNKNOWN</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="topbar-actions">
+      <button class="btn btn-secondary" onclick="openModal('settings-modal')" title="Preferences & Settings">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        Settings
+      </button>
+    </div>
+  </header>
+
+  <!-- Live engine status strip.  The animated beam along the bottom edge is the
+       activity feedback: it runs while any scan / export / calibration is busy. -->
+  <!-- Main Workspace -->
+  <div class="workspace">
+    <!-- Left Control Sidebar -->
+    <aside class="sidebar">
+      
+      <!-- Studio Tabs Header -->
+      <div class="sidebar-tabs" role="tablist" aria-label="Studio panels">
+        <button type="button" class="sidebar-tab-btn active" id="sbtn-capture" role="tab"
+                aria-selected="true" aria-controls="tab-content-capture" onclick="switchSidebarTab('capture')">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+          Scan Setup
+        </button>
+        <button type="button" class="sidebar-tab-btn" id="sbtn-enhance" role="tab"
+                aria-selected="false" aria-controls="tab-content-enhance" tabindex="-1" onclick="switchSidebarTab('enhance')">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3z"/></svg>
+          AI &amp; Enhance
+        </button>
+      </div>
+
+      <!-- Tab Content Area -->
+      <div class="sidebar-scroll-body">
+        
+        <!-- ================================================================
+             TAB 1: SCAN SETUP
+             ================================================================ -->
+        <div class="sidebar-tab-content active" id="tab-content-capture" role="tabpanel" aria-labelledby="sbtn-capture">
+          
+          <section class="card">
+            <h2>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8"/></svg>
+              Scan Configuration
+            </h2>
+
+            <!-- Source -->
+            <label class="field">
+              <span>Scan Source</span>
+              <select id="scan-source" onchange="onSourceChange(); persistScanSettings()">
+                <option value="live" selected>Live Hardware (Contex i4250s @ TCP/UDP 58170)</option>
+                <option value="demo_architectural">Demo: 3D Architectural Drawing + IT8</option>
+                <option value="demo_artwork">Demo: Full-Bleed Artwork / Photo</option>
+                <option value="rec_file">Offline Capture (.rec File)</option>
+              </select>
+            </label>
+
+            <!-- .rec Capture File picker -->
+            <label class="field" id="rec-file-field" style="display:none;">
+              <span>Select .rec Capture</span>
+              <select id="scan-rec-path"></select>
+            </label>
+
+            <!-- Demo Temperature Drift Simulation -->
+            <label class="checkbox-field" id="demo-drift-field" style="display:none;">
+              <input type="checkbox" id="simulate-drift" checked />
+              <span>Simulate Camera 4/5 Operating Temp Shift</span>
+            </label>
+
+            <!-- Paper Size -->
+            <label class="field">
+              <span>Paper Size / Auto-Width</span>
+              <select id="scan-paper-size" onchange="onPaperSizeChange(); persistScanSettings()">
+                <option value="auto">Auto-Detect Width (Nextimage DetectSize)</option>
+                <option value="full_42" selected>Full Sensor Width (42.0" / 1067 mm)</option>
+                <optgroup label="Architectural (ARCH)">
+                  <option value="arch_e">ARCH E (36.0" × 48.0")</option>
+                  <option value="arch_e1">ARCH E1 (30.0" × 42.0")</option>
+                  <option value="arch_d">ARCH D (24.0" × 36.0")</option>
+                  <option value="arch_c">ARCH C (18.0" × 24.0")</option>
+                </optgroup>
+                <optgroup label="ISO A Series">
+                  <option value="iso_a0">ISO A0 (33.11" × 46.81")</option>
+                  <option value="iso_a1">ISO A1 (23.39" × 33.11")</option>
+                  <option value="iso_a2">ISO A2 (16.54" × 23.39")</option>
+                </optgroup>
+                <optgroup label="ANSI Engineering">
+                  <option value="ansi_e">ANSI E (34.0" × 44.0")</option>
+                  <option value="ansi_d">ANSI D (22.0" × 34.0")</option>
+                  <option value="ansi_c">ANSI C (17.0" × 22.0")</option>
+                  <option value="ansi_b">ANSI B / Ledger (11.0" × 17.0")</option>
+                  <option value="ansi_a">ANSI A / Letter (8.5" × 11.0")</option>
+                </optgroup>
+                <option value="custom">Custom Width (Inches)</option>
+              </select>
+            </label>
+
+            <!-- Orientation -->
+            <div class="field" id="orientation-field">
+              <span>Orientation (Feed Width)</span>
+              <div class="segmented" role="group" aria-label="Paper orientation">
+                <button type="button" class="seg-btn active" data-orientation="portrait" disabled onclick="setOrientation('portrait')">Portrait</button>
+                <button type="button" class="seg-btn" data-orientation="landscape" disabled onclick="setOrientation('landscape')">Landscape</button>
+              </div>
+            </div>
+            <div class="muted-text" id="paper-width-hint" style="margin-top:-3px;">
+              Pick a standard sheet size to choose portrait or landscape.
+            </div>
+
+            <!-- Demo platen sheet simulation -->
+            <label class="field" id="demo-paper-width-field" style="display:none;">
+              <span>Demo Physical Sheet on Platen</span>
+              <select id="demo-paper-width">
+                <option value="36.0" selected>ARCH E Sheet (36.0" on 42" Platen)</option>
+                <option value="33.11">ISO A0 Sheet (33.11" on 42" Platen)</option>
+                <option value="24.0">ARCH D Sheet (24.0" on 42" Platen)</option>
+                <option value="22.0">ANSI D Sheet (22.0" on 42" Platen)</option>
+                <option value="18.0">ARCH C Sheet (18.0" on 42" Platen)</option>
+                <option value="8.5">ANSI A Sheet (8.5" on 42" Platen)</option>
+              </select>
+            </label>
+
+            <!-- Resolution & Width -->
+            <div class="row-2">
+              <label class="field">
+                <span>Width (in)</span>
+                <input type="number" id="scan-width" value="42.0" min="4.0" max="42.0" step="0.25" disabled onchange="persistScanSettings()" />
+              </label>
+              <label class="field" title="Ask = show the drift comparison dialog; Auto-correct = apply the margin self-calibration silently; Off = skip the drift analysis and the corrected render (fastest, for bulk scanning)">
+                <span>Colour / Temp Drift Check</span>
+                <select id="scan-drift-policy" onchange="onDriftPolicyChange()">
+                  <option value="prompt">Ask before applying</option>
+                  <option value="auto_adjust">Auto-correct silently</option>
+                  <option value="disabled">Off — bulk, fastest</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Resolution (DPI)</span>
+                <select id="scan-dpi" onchange="persistScanSettings()">
+                  <option value="100">100 DPI (Draft)</option>
+                  <option value="200">200 DPI (CAD)</option>
+                  <option value="300" selected>300 DPI (Native Master)</option>
+                  <option value="400">400 DPI (Fine)</option>
+                  <option value="600">600 DPI (Optical Max)</option>
+                  <option value="1200">1200 DPI (Ultra-HD)</option>
+                </select>
+              </label>
+            </div>
+
+            <!-- Color Mode -->
+            <label class="field">
+              <span>Color Mode</span>
+              <select id="scan-color-mode" onchange="persistScanSettings()">
+                <option value="color">Color (24-bit RGB)</option>
+                <option value="grayscale">Grayscale (8-bit Gray)</option>
+              </select>
+            </label>
+
+            <!-- Calibration Preset -->
+            <label class="field">
+              <span>Active Calibration Preset</span>
+              <div class="preset-row">
+                <select id="scan-preset" onchange="persistScanSettings()"></select>
+                <button class="btn btn-xs btn-secondary" onclick="rollbackActivePreset()" title="Revert preset to previous .bak">
+                  ↶ Undo
+                </button>
+              </div>
+            </label>
+
+            <!-- Collapsible Advanced Seam Tuning -->
+            <div class="accordion-box" id="advanced-seam-box">
+              <button type="button" class="accordion-header" aria-expanded="false"
+                      aria-controls="advanced-seam-body" onclick="toggleAccordion('advanced-seam-box')">
+                <span>⚙ Advanced Seam &amp; Feather Tuning</span>
+                <span class="accordion-arrow" id="advanced-seam-arrow">▸</span>
+              </button>
+              <div class="accordion-body" id="advanced-seam-body" hidden style="display:none;">
+                <label class="checkbox-field" title="Equalize &amp; feather per-scan analog color/luminance variations across adjacent pixels at the 4 camera seams">
+                  <input type="checkbox" id="scan-seam-blend" checked onchange="toggleScanSeamBlendControls()" />
+                  <span>Blend Seam Variations (4 Joins)</span>
+                </label>
+
+                <div id="scan-seam-blend-controls" style="display:flex; flex-direction:column; gap:8px;">
+                  <div class="row-2">
+                    <label class="field">
+                      <span>Blend Width: <strong id="scan-blend-width-lbl">±128 px</strong></span>
+                      <input type="range" id="scan-blend-width" min="16" max="1024" step="8" value="128" oninput="onScanBlendAdjustChange()" />
+                    </label>
+                    <label class="field">
+                      <span>Strength: <strong id="scan-blend-str-lbl">85%</strong></span>
+                      <input type="range" id="scan-blend-strength" min="10" max="100" step="5" value="85" oninput="onScanBlendAdjustChange()" />
+                    </label>
+                  </div>
+                  <label class="field">
+                    <span>Feather Style</span>
+                    <select id="scan-feather-mode" onchange="persistScanSettings()">
+                      <option value="classic">Classic — crisp, for line art</option>
+                      <option value="artwork">Artwork — soft, wide colour feather</option>
+                    </select>
+                  </label>
+                </div>
+              </div>
+            </div>
+
+          </section>
+
+          <!-- 2. Thermal / Operating Temp Drift Card -->
+          <section class="card" id="drift-card">
+            <div class="card-header-row">
+              <h2>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z"/></svg>
+                Sensor Temp &amp; Color Drift
+              </h2>
+              <span id="drift-badge" class="pill pill-neutral">No Scan Yet</span>
+            </div>
+            <p id="drift-recommendation" class="muted-text">
+              The real-time drift analyzer checks white margins across Cameras 1–5 for thermal lamp shifts.
+            </p>
+            <div id="drift-metrics-box" style="display:none;">
+              <div class="metric-grid">
+                <div class="metric-item">
+                  <span class="metric-label">Preset Spread</span>
+                  <strong id="m-stored-spread">—</strong>
+                </div>
+                <div class="metric-item">
+                  <span class="metric-label">Auto-Adj Spread</span>
+                  <strong id="m-self-spread">—</strong>
+                </div>
+                <div class="metric-item">
+                  <span class="metric-label">Level Dev</span>
+                  <strong id="m-level-dev">—</strong>
+                </div>
+              </div>
+              <div class="cam-bars" id="cam-gain-bars"></div>
+              <div class="btn-row-gap">
+                <button class="btn btn-secondary btn-sm" onclick="openModal('drift-modal')">
+                  Compare Default vs. Auto-Adjust
+                </button>
+                <button class="btn btn-secondary btn-sm" onclick="openModal('wizard-modal')">
+                  Sheet Wizard
+                </button>
+              </div>
+            </div>
+          </section>
+
+        </div>
+
+        <!-- ================================================================
+             TAB 2: AI & ENHANCE
+             ================================================================ -->
+        <div class="sidebar-tab-content" id="tab-content-enhance" role="tabpanel" aria-labelledby="sbtn-enhance" hidden>
+          
+          <section class="card">
+            <h2>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3z"/></svg>
+              AI Restoration &amp; Seam Correction
+            </h2>
+
+            <label class="checkbox-field auto-ai-row"
+                   title="Run these AI settings automatically as soon as a scan is ready. With autosave on, the AI render is written as <number>_AI beside the standard file.">
+              <input type="checkbox" id="ai-auto-enhance" onchange="onAutoAiEnhanceChange()" />
+              <span><strong>Auto AI Enhance</strong> — run this chain after every scan</span>
+            </label>
+
+            <!-- Seam blend -->
+            <label class="checkbox-field">
+              <input type="checkbox" id="ai-blend-seam-colors" checked onchange="toggleAiSeamBlendControls()" />
+              <span>Analog Seam Color Harmonization</span>
+            </label>
+            <div id="ai-seam-blend-controls" style="padding-left:22px; display:flex; flex-direction:column; gap:6px;">
+              <div class="row-2">
+                <label class="field">
+                  <span>Zone: <strong id="ai-blend-width-lbl">±128 px</strong></span>
+                  <input type="range" id="ai-blend-width" min="16" max="1024" step="8" value="128" oninput="onAiBlendAdjustChange()" />
+                </label>
+                <label class="field">
+                  <span>Strength: <strong id="ai-blend-str-lbl">85%</strong></span>
+                  <input type="range" id="ai-blend-strength" min="10" max="100" step="5" value="85" oninput="onAiBlendAdjustChange()" />
+                </label>
+              </div>
+            </div>
+
+            <!-- Inpaint seams -->
+            <label class="checkbox-field">
+              <input type="checkbox" id="ai-heal-seams" checked onchange="toggleAiMicroFeatherControls()" />
+              <span>4-Seam Micro-Inpaint &amp; Step Healing</span>
+            </label>
+            <div id="ai-micro-feather-controls" style="padding-left:22px;">
+              <label class="field">
+                <span>Micro-Feather Radius: <strong id="ai-seam-radius-lbl">±6 px</strong></span>
+                <input type="range" id="ai-seam-radius" min="1" max="24" step="1" value="6" oninput="onAiBlendAdjustChange()" />
+              </label>
+            </div>
+
+            <hr class="divider" />
+
+            <!-- Filters -->
+            <label class="checkbox-field">
+              <input type="checkbox" id="ai-clean-bg" />
+              <span>Background Paper Clean &amp; Whiten</span>
+            </label>
+            <label class="checkbox-field">
+              <input type="checkbox" id="ai-denoise" checked />
+              <span>Shadow &amp; Camera 4/5 Chroma Denoise</span>
+            </label>
+            <label class="checkbox-field">
+              <input type="checkbox" id="ai-sharpen" />
+              <span>Linework Crispness &amp; Detail Sharpen</span>
+            </label>
+
+            <hr class="divider" />
+
+            <!-- External AI / Webhook -->
+            <label class="checkbox-field">
+              <input type="checkbox" id="ai-external" onchange="toggleExternalAi()" />
+              <span>Photocraft / Generative AI Webhook</span>
+            </label>
+            <div id="external-ai-box" style="display:none; padding-left:22px;">
+              <label class="field">
+                <span>AI Enhancement Prompt</span>
+                <input type="text" id="ai-prompt" value="Clean architectural drawing, neutralize paper cast, preserve crisp lines." />
+              </label>
+            </div>
+
+            <button class="btn btn-accent btn-block" id="btn-ai-enhance" onclick="runAiEnhance()" disabled style="margin-top:6px;">
+              ✨ Run Post-Processing
+            </button>
+          </section>
+
+        </div>
+
+      </div>
+
+    </aside>
+
+
+
+    <!-- Center Deep-Zoom & Studio Canvas Viewport -->
+    <main class="viewer-panel">
+      
+      <!-- Top Floating Viewport Toolbar -->
+      <!-- Live engine status strip (animated beam = activity feedback) -->
+      <nav class="pipeline-bar" id="pipeline-bar" aria-live="polite">
+        <div class="pipeline-status" id="pipeline-status-text">
+          <span class="pill-dot" style="background:#10b981;box-shadow:0 0 6px #10b981;"></span>
+          Ready to scan
+        </div>
+      </nav>
+
+      <div class="viewer-toolbar">
+        <div class="tab-group" role="tablist">
+          <button type="button" class="tab active" id="tab-preset" onclick="setViewerMode('preset')"
+                  title="Stored calibration preset, rendered without drift compensation">Default Preset</button>
+          <button type="button" class="tab" id="tab-auto" onclick="setViewerMode('auto_adjust')"
+                  title="Margin self-calibration render (needs the drift check on)">Auto-Adjusted</button>
+          <button type="button" class="tab" id="tab-ai" onclick="setViewerMode('ai_enhanced')"
+                  title="Run AI Enhance to enable this view">AI Enhanced</button>
+          <button type="button" class="tab" id="tab-split" onclick="setViewerMode('split')">A/B Split</button>
+          <button type="button" class="tab" id="tab-raw" onclick="setViewerMode('raw')">Raw Sensor</button>
+          <button type="button" class="tab" id="tab-seams" onclick="setViewerMode('seams')">1:1 Seam Inspector</button>
+        </div>
+
+        <div class="zoom-controls">
+          <label class="checkbox-inline" title="Display vertical dashed markers at the 4 camera stitch seams">
+            <input type="checkbox" id="show-seam-lines" checked onchange="renderCanvas()" />
+            <span>Show 4 Seams</span>
+          </label>
+          <button class="btn btn-xs btn-secondary" onclick="zoomBy(0.8)" title="Zoom Out">−</button>
+          <span id="zoom-label">Fit</span>
+          <button class="btn btn-xs btn-secondary" onclick="zoomBy(1.25)" title="Zoom In">＋</button>
+          <button class="btn btn-xs btn-secondary" onclick="resetZoom()" title="Reset to Fit">Fit</button>
+        </div>
+      </div>
+
+      <!-- Canvas Viewport Stage -->
+      <div class="canvas-container" id="canvas-container">
+        <canvas id="scan-canvas"></canvas>
+
+        <!-- Dynamic Activity / Processing HUD -->
+        <div id="processing-overlay" class="processing-hud" style="display:none;">
+          <div class="processing-hud-card">
+            <div class="processing-spinner-ring">
+              <div class="processing-spinner"></div>
+              <div class="processing-icon" id="processing-icon">⚡</div>
+            </div>
+            <div class="processing-hud-text">
+              <span id="processing-hud-subtitle" class="processing-hud-status">Working…</span>
+            </div>
+            <div class="processing-hud-elapsed" id="processing-hud-timer">0s</div>
+          </div>
+        </div>
+
+        <!-- A/B Comparison Slider Bar -->
+        <div id="split-slider-control" class="split-slider" style="display:none;">
+          <input type="range" id="ab-slider" min="0" max="100" value="50" oninput="onSplitSliderChange(this.value)" />
+          <div class="split-labels">
+            <span class="split-tag split-tag-left" id="split-left-label">Left: Default Stored Preset</span>
+            <span class="split-tag split-tag-right" id="split-right-label">Right: Auto-Adjusted (Drift Corrected)</span>
+          </div>
+        </div>
+
+        <!-- 1:1 Seam Crops Inspector View -->
+        <div id="seam-inspector-view" class="seam-inspector" style="display:none;">
+          <h3>1:1 Pixel Seam Verification (4 Camera Boundaries)</h3>
+          <p class="muted-text">Verifies zero dead-band pixel columns and smooth transition across cam1|cam2, cam2|cam3, cam3|cam4, cam4|cam5.</p>
+          <div id="seam-crops-grid" class="seam-grid"></div>
+        </div>
+      </div>
+
+      <!-- Bottom Scan Telemetry Dock -->
+      <footer class="viewer-footer">
+        <span id="meta-dims">Dimensions: —</span>
+        <span id="meta-joins">Seam Joins: 2658, 5320, 7982, 10644 px</span>
+        <span id="meta-quality">Zero Cols: 0 · Dark Cols: 0</span>
+        <span id="meta-mode">Mode: —</span>
+        <span class="footer-eject">
+          <button class="btn btn-xs btn-secondary" id="btn-eject-front" onclick="ejectCompletedScan()" disabled title="Eject scanned document out the front">
+            ⏏ Eject Scan to Front
+          </button>
+        </span>
+      </footer>
+
+    </main>
+
+    <!-- Right Rail: scan action on top, output & autosave below -->
+    <aside class="sidebar sidebar-right" aria-label="Scan action and output settings">
+      <div class="sidebar-action-dock">
+        <!-- Scanner status (link + media) -->
+        <section class="rail-status" aria-label="Scanner status">
+          <div class="rail-label">Scanner Status</div>
+          <span id="hw-link" class="pill pill-ok">
+            <span class="pill-dot"></span>1 Gbps Link Ready
+          </span>
+          <span id="hw-media" class="pill pill-neutral">
+            <span class="pill-dot"></span>Checking...
+          </span>
+        </section>
+
+        <!-- Paper feed controls -->
+        <div class="paper-btn-group" role="group" aria-label="Paper Feed Controls">
+          <button class="btn-paper" onclick="paperAction('load')" title="Load sheet into scan position (fn=1)">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12l7 7 7-7"/></svg>
+            Load
+          </button>
+          <button class="btn-paper" onclick="paperAction('eject_front')" title="Eject sheet out front (0xFFFFFE)">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+            Eject Front
+          </button>
+          <button class="btn-paper" onclick="paperAction('eject_back')" title="Eject sheet out rear (0xFFFFFF)">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+            Eject Rear
+          </button>
+          <button class="btn-paper" onclick="paperAction('recover')" title="Run Unload -> Load Recovery Cycle (0x24)">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 21h5v-5"/></svg>
+            Recover
+          </button>
+        </div>
+
+        <button class="btn btn-primary btn-lg btn-block" id="btn-start-scan" onclick="startScan()">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+          Initiate Scan
+        </button>
+
+        <button class="btn btn-danger btn-block" id="btn-cancel-scan" onclick="cancelActiveScan()" style="display:none;" title="Stop scan at next safe point">
+          ✕ Cancel Scan
+        </button>
+
+        <!-- Live Scan Activity Status (visible during scan) -->
+        <div id="scan-activity" class="scan-activity" role="status" aria-live="polite" style="display:none;">
+          <span class="spinner" aria-hidden="true"></span>
+          <span id="scan-activity-text">Preparing scan…</span>
+          <span id="scan-activity-elapsed" class="scan-elapsed">0s</span>
+        </div>
+
+        <!-- Always-visible output / autosave settings -->
+        <section class="output-dock" aria-label="Output and autosave settings">
+          <div class="output-dock-head">
+            <span class="output-dock-title">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+              Output &amp; Autosave
+            </span>
+            <label class="auto-toggle" title="Automatically save the selected formats after each scan, drift decision, or AI render">
+              <input type="checkbox" id="autosave-enabled" checked onchange="persistOutputSettings()" />
+              <span class="toggle-switch" aria-hidden="true"></span>
+              <span class="auto-toggle-text">Autosave</span>
+            </label>
+          </div>
+
+          <div class="row-2">
+            <label class="field">
+              <span>File Prefix</span>
+              <input type="text" id="export-prefix" value="scan" spellcheck="false"
+                     oninput="updateNextFilenamePreview()" onchange="persistOutputSettings()" />
+            </label>
+            <label class="field">
+              <span>Next Auto #</span>
+              <input type="number" id="export-next-seq" value="1" min="1" step="1"
+                     oninput="updateNextFilenamePreview()" onchange="persistOutputSettings()" />
+            </label>
+          </div>
+
+          <div class="muted-text next-file-preview" id="next-file-preview">
+            Next file: <strong>scan_0001</strong>
+          </div>
+
+          <label class="field">
+            <span>Output Directory</span>
+            <div class="output-dir-row">
+              <input type="text" id="export-output-dir" spellcheck="false" autocomplete="off"
+                     class="output-path-input" onchange="persistOutputSettings()" />
+              <button type="button" class="btn btn-secondary btn-sm" id="btn-browse-output"
+                      onclick="openBrowseModal()" title="Browse for the output directory">Browse…</button>
+            </div>
+          </label>
+
+          <div class="output-formats-row">
+            <span class="output-formats-label">Formats</span>
+            <div class="format-chips">
+              <label class="format-chip">
+                <input type="checkbox" id="fmt-tiff" checked onchange="onExportFormatChange(this)" />
+                <span>TIFF</span>
+              </label>
+              <label class="format-chip">
+                <input type="checkbox" id="fmt-jpg" checked onchange="onExportFormatChange(this)" />
+                <span>JPG</span>
+              </label>
+              <label class="format-chip">
+                <input type="checkbox" id="fmt-pdf" checked onchange="onExportFormatChange(this)" />
+                <span>PDF</span>
+              </label>
+            </div>
+          </div>
+          <div class="muted-text" id="export-format-note">
+            Autosave and Save / Export will write TIFF, JPG, PDF.
+          </div>
+
+          <button class="btn btn-secondary btn-block btn-sm" id="btn-export" onclick="exportCurrentScan()" disabled
+                  title="Save the render shown in the viewer">
+            💾 Save current view
+          </button>
+        </section>
+
+        <button class="btn btn-secondary btn-block" onclick="openModal('wizard-modal')" title="Calibrate with the Contex IT8.7/2 sheet">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/></svg>
+          Calibration Sheet Wizard
+        </button>
+      </div>
+    </aside>
+  </div>
+
+  <!-- ========================================================================
+       MODAL 1: Thermal / Operating Temp Drift Alert & Side-by-Side Comparison
+       ======================================================================== -->
+  <div class="modal-backdrop" id="drift-modal" style="display:none;">
+    <div class="modal modal-lg">
+      <div class="modal-header">
+        <div>
+          <h2 id="drift-modal-title">⚠ Camera Operating Temp / Color Shift Detected</h2>
+          <p id="drift-modal-subtitle" class="muted-text"></p>
+        </div>
+        <button class="btn-close" onclick="closeModal('drift-modal')">✕</button>
+      </div>
+
+      <div class="modal-body">
+        <div class="compare-zoom-bar">
+          <span class="muted-text">Both previews share one view — drag to pan, scroll to zoom, double-click to fit.</span>
+          <div class="zoom-controls">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="driftZoomBy(1 / 1.25)"
+                    title="Zoom out" aria-label="Zoom out">−</button>
+            <span class="zoom-label" id="drift-zoom-label">100%</span>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="driftZoomBy(1.25)"
+                    title="Zoom in" aria-label="Zoom in">+</button>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="driftZoomReset()"
+                    title="Fit both previews to the window">Fit</button>
+          </div>
+        </div>
+        <div class="drift-comparison-grid" id="drift-comparison-grid">
+          <div class="compare-card">
+            <div class="compare-header">
+              <strong>Option A: Default Stored Preset</strong>
+              <span class="pill pill-warn" id="modal-spread-preset">Spread: —</span>
+            </div>
+            <div class="compare-img-wrap" data-drift-pane="preset">
+              <img id="modal-img-preset" class="drift-zoom-img" alt="Default Preset Render" draggable="false" />
+            </div>
+            <p class="muted-text">Applies stored flat-field W without compensating for current lamp temperature shift.</p>
+          </div>
+
+          <div class="compare-card compare-card-highlight">
+            <div class="compare-header">
+              <strong>Option B: Auto-Adjusted (Margin Self-Calibration)</strong>
+              <span class="pill pill-ok" id="modal-spread-auto">Spread: —</span>
+            </div>
+            <div class="compare-img-wrap" data-drift-pane="auto">
+              <img id="modal-img-auto" class="drift-zoom-img" alt="Auto-Adjusted Render" draggable="false" />
+            </div>
+            <p class="muted-text">Fits degree-5 polynomial gain s(x) per camera + live optical black B from scan margins.</p>
+          </div>
+        </div>
+
+        <div class="promote-options">
+          <label class="checkbox-field">
+            <input type="checkbox" id="drift-promote-check" />
+            <span>Update active preset with this calibration (backs up previous preset to .bak)</span>
+          </label>
+          <div class="inline-input">
+            <span>Or save as new preset name:</span>
+            <input type="text" id="drift-new-preset-name" placeholder="e.g. Warmed Up - Arch Bond" />
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="resolveDrift('preset')">
+          Ignore (Use Stored Preset)
+        </button>
+        <button class="btn btn-secondary" onclick="closeModal('drift-modal'); openModal('wizard-modal');">
+          Calibrate with Official Contex Sheet...
+        </button>
+        <button class="btn btn-primary" onclick="resolveDrift('auto_adjust')">
+          ✓ Apply Auto-Adjusted Calibration &amp; Stitch
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========================================================================
+       MODAL 2: Official Contex Calibration Sheet Wizard (p/n 6779G014)
+       ======================================================================== -->
+  <div class="modal-backdrop" id="wizard-modal" style="display:none;">
+    <div class="modal modal-lg">
+      <div class="modal-header">
+        <div>
+          <h2>Official Contex Calibration Sheet Wizard</h2>
+          <p class="muted-text">Sheet p/n 6779G014 · Charge R170829 · IT8.7/2 (264 Patches + White/Black Reference Bands)</p>
+        </div>
+        <button class="btn-close" onclick="closeModal('wizard-modal')">✕</button>
+      </div>
+
+      <div class="modal-body">
+        <div class="wizard-steps">
+          <p class="muted-text">
+            <strong>Instructions:</strong> scan the Contex Official Calibration Sheet first (full 42" width, colour, 300 dpi — no auto-detect width, and the active preset is never overwritten), then open this wizard on that scan.
+          </p>
+          <label class="checkbox-field">
+            <input type="checkbox" id="wiz-auto-align" checked onchange="onWizardAutoAlignChange()" />
+            <span><strong>Auto-align the 22×12 grid</strong> — sweeps the sampling window and keeps the offset with the lowest dE76 (recommended: a hand-placed sheet lands a few tenths of an inch off)</span>
+          </label>
+          <p class="muted-text" id="wiz-auto-align-hint">
+            Auto-align is on: the X/Y sliders are only a starting hint. Clear it to place the grid by hand.
+          </p>
+
+          <div class="wiz-preview">
+            <div class="card-header-row">
+              <strong>Sheet &amp; IT8 Target Alignment Preview</strong>
+              <span class="muted-text">Magenta = 22×12 sample grid used for fit</span>
+            </div>
+            
+            <div class="wiz-canvas-wrap">
+              <canvas id="wiz-sheet-canvas" width="880" height="400"></canvas>
+            </div>
+            
+            <div class="wiz-canvas-wrap" style="margin-top:6px;">
+              <canvas id="wiz-it8-canvas" width="880" height="240"></canvas>
+            </div>
+
+            <div style="margin-top:8px;">
+              <div class="row-2">
+                <label class="field">
+                  <span>IT8 X Offset: <strong id="wiz-it8-dx-lbl">0</strong> px <span class="muted-text">(300 dpi)</span></span>
+                  <input type="range" id="wiz-it8-dx" min="-600" max="600" step="1" value="0" oninput="onWizardOffsetChange()" />
+                </label>
+                <label class="field">
+                  <span>IT8 Y Offset: <strong id="wiz-it8-dy-lbl">0</strong> px <span class="muted-text">(300 dpi)</span></span>
+                  <input type="range" id="wiz-it8-dy" min="-200" max="200" step="1" value="0" oninput="onWizardOffsetChange()" />
+                </label>
+              </div>
+            </div>
+
+            <label class="checkbox-field" style="margin-top:6px;">
+              <input type="checkbox" id="wiz-placement-approved" />
+              <span>I verified the magenta 22×12 grid is inside the IT8 color patches
+                <span class="muted-text">(required only when auto-align is off)</span>.</span>
+            </label>
+
+            <div style="margin-top:6px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+              <button class="btn btn-secondary btn-sm" onclick="saveWizardDebugCapture()">Save Debug Capture (.rec + TIFF/PNG)</button>
+              <label class="checkbox-field" style="margin:0;">
+                <input type="checkbox" id="wiz-debug-npy" />
+                <span>Include 16-bit raw raster (.npy)</span>
+              </label>
+              <span id="wiz-debug-note" class="muted-text">600 dpi is fine; the sheet geometry scales with the scan DPI.</span>
+            </div>
+          </div>
+
+          <div class="row-2">
+            <label class="field">
+              <span>Calibration Mode</span>
+              <select id="wiz-sheet-mode">
+                <option value="it8_full">Full Official IT8.7/2 Colorimetric (264 Patches + White/Black Bands)</option>
+                <option value="white_flatfield">Full-Width White Flat-Field Only (Back of Sheet)</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Save as New Preset Name (blank = timestamped)</span>
+              <input type="text" id="wiz-preset-name" placeholder="e.g. Official IT8 Calibrated (Warm)" />
+            </label>
+          </div>
+
+          <div id="wiz-result-box" class="wiz-result" style="display:none;"></div>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="closeModal('wizard-modal')">Close</button>
+        <button class="btn btn-secondary" onclick="runSheetCalibrationWizard()">
+          Approve &amp; Calibrate
+        </button>
+        <button class="btn btn-primary" onclick="startSheetScanAndCalibrate()">
+          Scan Sheet (300 dpi)
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========================================================================
+       MODAL 3: Studio Settings
+       ======================================================================== -->
+  <div class="modal-backdrop" id="settings-modal" style="display:none;">
+    <div class="modal">
+      <div class="modal-header">
+        <h2>Scanner Studio Preferences &amp; Settings</h2>
+        <button class="btn-close" onclick="closeModal('settings-modal')">✕</button>
+      </div>
+
+      <div class="modal-body">
+        <div class="row-2">
+          <label class="field">
+            <span>Scanner IP Address</span>
+            <input type="text" id="set-scanner-ip" value="0.0.0.0" />
+          </label>
+          <label class="field">
+            <span>Scanner Serial Number</span>
+            <input type="text" id="set-scanner-serial" value="UNKNOWN" />
+          </label>
+        </div>
+
+        <label class="field">
+          <span>Thermal / Color Drift Detection Policy</span>
+          <select id="set-drift-policy">
+            <option value="prompt">Prompt with Side-by-Side Preview on Drift (Recommended)</option>
+            <option value="auto_adjust">Always Auto-Adjust Silently from Margins</option>
+            <option value="disabled">Disabled (Always use selected preset without asking)</option>
+          </select>
+        </label>
+
+        <div class="row-2">
+          <label class="field">
+            <span>Post-Scan Paper Handling</span>
+            <select id="set-eject-mode">
+              <option value="hold">Hold in Rollers</option>
+              <option value="eject_back">Eject Out Rear (0xFFFFFF)</option>
+              <option value="eject_front">Eject Out Front (0xFFFFFE)</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>JPEG Compression Preset</span>
+            <select id="set-jpg-quality">
+              <option value="100">100% — Maximum (largest)</option>
+              <option value="95">95% — High (recommended)</option>
+              <option value="90">90% — Very Good</option>
+              <option value="85">85% — Balanced</option>
+              <option value="75">75% — Compact</option>
+              <option value="60">60% — Small (email)</option>
+            </select>
+          </label>
+        </div>
+
+        <label class="checkbox-field">
+          <input type="checkbox" id="set-seam-blend-enabled" checked />
+          <span>Enable Analog Seam Color Blending by default</span>
+        </label>
+
+        <div class="row-2">
+          <label class="field">
+            <span>Default Blend Width (px)</span>
+            <input type="number" id="set-seam-blend-width" value="128" min="8" max="1024" step="8" />
+          </label>
+          <label class="field">
+            <span>Default Blend Strength (%)</span>
+            <input type="number" id="set-seam-blend-strength" value="85" min="5" max="100" step="5" />
+          </label>
+        </div>
+
+        <hr class="divider" />
+        <h3 style="font-size:12px; font-weight:700; color:#cbd5e1;">Output Defaults</h3>
+        <div class="muted-text">
+          Output directory, file prefix, autosave, formats and the next auto number live in the
+          always-visible <strong>Output &amp; Autosave</strong> panel above Initiate Scan.
+        </div>
+
+        <label class="checkbox-field">
+          <input type="checkbox" id="set-auto-number" checked />
+          <span>Auto-number scans sequentially (scan_0001, scan_0002 — never overwrites)</span>
+        </label>
+
+        <label class="checkbox-field">
+          <input type="checkbox" id="set-tiff-16bit" />
+          <span>Save a 16-bit master TIFF for grayscale exports</span>
+        </label>
+
+        <label class="checkbox-field">
+          <input type="checkbox" id="set-debug-mode" />
+          <span>Enable Debug Mode (save raw .rec stream, transcript &amp; 1:1 seam crops)</span>
+        </label>
+
+        <hr class="divider" />
+        <h3 style="font-size:12px; font-weight:700; color:#cbd5e1;">External Generative AI / Photocraft MCP Integration</h3>
+        <label class="field">
+          <span>Photocraft / External AI Webhook URL</span>
+          <input type="text" id="set-photocraft-url" placeholder="http://localhost:9000/api/enhance" />
+        </label>
+        <label class="field">
+          <span>API Key (Optional)</span>
+          <input type="password" id="set-photocraft-key" placeholder="Bearer token..." />
+        </label>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="closeModal('settings-modal')">Cancel</button>
+        <button class="btn btn-primary" onclick="saveSettings()">Save Settings</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========================================================================
+       MODAL 4: Output Directory Browser
+       ======================================================================== -->
+  <div class="modal-backdrop" id="browse-modal" style="display:none;">
+    <div class="modal modal-narrow">
+      <div class="modal-header">
+        <h2>Choose Output Directory</h2>
+        <button class="btn-close" onclick="closeModal('browse-modal')">✕</button>
+      </div>
+
+      <div class="modal-body">
+        <label class="field">
+          <span>Folder</span>
+          <div class="browse-path-row">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="browseHome()" title="Go to home directory">⌂</button>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="browseUp()" title="Go to parent directory">↑ Up</button>
+            <input type="text" id="browse-path-input" spellcheck="false" autocomplete="off"
+                   onkeydown="if (event.key === 'Enter') { event.preventDefault(); loadBrowsePath(this.value); }" />
+            <button type="button" class="btn btn-secondary btn-sm" onclick="loadBrowsePath(document.getElementById('browse-path-input').value)">Go</button>
+          </div>
+        </label>
+
+        <div class="browse-list" id="browse-list" role="listbox" aria-label="Subfolders"></div>
+        <div class="muted-text" id="browse-status"></div>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="closeModal('browse-modal')">Cancel</button>
+        <button class="btn btn-primary" id="browse-use-btn" onclick="useBrowsedFolder()">Use This Folder</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js?v=1793238200"></script>
+</body>
+</html>
