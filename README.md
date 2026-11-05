@@ -4,7 +4,9 @@ Modern cross-platform scanner application, Model Context Protocol (MCP) server, 
 
 **License:** GNU GPL-3.0 — see [LICENSE](LICENSE).
 
-![Open.NEXT Scanner Studio](docs/images/ONEXT_A-B.png)
+<p align="center">
+  <img src="docs/images/ONEXT_Corrected2.jpg" alt="Open.NEXT Scanner Studio" width="90%" />
+</p>
 
 ---
 
@@ -30,6 +32,9 @@ This application is an **open-source, host software-based solution** designed to
   1. **Black & White Optical Bands**: Used to calibrate live optical black pedestals ($B_i$) and per-column white-level flat-field profiles ($W_i$) across all 5 cameras.
   2. **264-Patch ANSI IT8.7/2 Target**: Used to derive the $3\times 3$ colorimetric matrix and gamma curve in CIE Lab / sRGB space ($\Delta E^*_{ab} = 2.30$ median).
 * **Extensible for Any Target**: Because the calibration pipeline is 100% open Python ([`ctx/calibration.py`](ctx/calibration.py)), developers are not locked to Contex sheets. The target grid detection, coordinates, and reference color tables can be readily refactored to accommodate **any third-party or custom calibration sheet** (e.g., standard Kodak/Wolf Faust IT8 targets, X-Rite ColorCheckers, or custom architectural gray step charts).
+<p align="center">
+  <img src="docs/images/ONEXT_Wizard.jpg" alt="Open.NEXT Scanner Studio" width="70%" />
+</p>
 
 ### 3. Processing Performance: CUDA & Multi-Threading vs. Hardware Speed
 * **Host Optimization**: The processing pipeline includes high-performance multi-threaded CPU routines (NumPy/OpenMP) and optional **NVIDIA CUDA GPU acceleration** (via CuPy for 10–12× faster color transforms).
@@ -42,7 +47,7 @@ This application is an **open-source, host software-based solution** designed to
 * **Seamless Reintegration**: Photocraft performs deep generative restoration (e.g. damaged blueprint reconstruction, severe crease removal, background texturization) and streams the restored image back to the host, where it is converted back to 16-bit, registered as `<scan_id>_AI.<ext>`, and displayed in the viewer with side-by-side or A/B split comparisons.
 * **Auto AI Enhance**: You can enable the **Auto AI Enhance** toggle to have Photocraft run automatically after every scan, fully automating end-to-end scanning, stitching, and neural AI restoration.
 
-![Pre-scan calibration & MCP hook processing](docs/images/calibration_sheet.jpg)
+  ![Pre-scan calibration & MCP hook processing](docs/images/calibration_sheet.jpg)
 
 ---
 
@@ -107,6 +112,10 @@ Review in the viewer ──► Save current view (TIFF / JPG / PDF) ──► Au
    - **Colour / Temp Drift Check** selector in **Scan Setup**: `Ask before applying`, `Auto-correct silently`, or `Off — bulk, fastest`. Setting it to `Off` skips both the drift analysis and the auto-adjusted second stitch (measured **23.6 s + 5.8 s per 42" / 300 dpi sheet**), so a batch never stops at a dialog.
    - Both previews in the drift dialog share one zoom/pan state (drag to pan, scroll to zoom, double-click to fit), so the same detail of A and B can be compared up to 1200 %.
 
+<p align="center">
+  <img src="docs/images/ONEXT_Drift.jpg" alt="Open.NEXT Scanner Studio" width="80%" />
+</p>
+
 4. **Seamless 5-Camera Stitching, Generative AI Post-Processing & Export (`ctx/pipeline.py`, `ctx/ai.py`)**:
    - Stitches `cam1..cam5` into a `12,600 px` (`42.000 in` @ 300 DPI) composite with `0` zero columns across the 4 seams (composite `x = 2586, 5108, 7642, 10168`; the raw camera module boundaries are `2,658 / 5,320 / 7,982 / 10,644`).
    - **Built-in Restoration & External AI / Photocraft Bridge (`ctx/ai.py`)**:
@@ -122,6 +131,7 @@ Review in the viewer ──► Save current view (TIFF / JPG / PDF) ──► Au
    - **Auto AI Enhance**: a toggle at the top of the **AI & Enhance** tab that runs that tab's current chain automatically as soon as a scan is ready (persisted as the `auto_ai_enhance` setting).
    - **Right-rail action column**: scanner status (link + media), feed controls (**Load / Eject Front / Eject Rear / Recover**), **Initiate Scan**, the **Output & Autosave** panel (autosave, **Prefix** / **Auto #** / **Auto describe** switches, next auto number with **Reset**, formats, output directory with **Browse…**, save button) and the **Calibration Sheet Wizard**.
    - **Debug Mode Toggle**: When enabled in Settings, automatically saves `<scan_id>.rec`, `<scan_id>.jsonl`, 1:1 seam crops, and `<scan_id>-diagnostics.json` in `scans_output/debug/`.
+
 
 ---
 
@@ -140,6 +150,9 @@ A scan is cataloged and named through visual understanding. Open.NEXT v0.2.0 fea
     - `tags`: Search tags/keywords.
   - Automatically renames all exported files (TIFF, JPG, PDF) to `<Prefix>_<YYMMDDHHMM>_<NNNN>_<DocType>_<Slug>.<ext>` and writes a `.meta.json` sidecar without requiring external OCR daemons.
 
+<p align="center">
+  <img src="docs/images/ONEXT_scan.jpg" alt="Open.NEXT Scanner Studio" width="30%" />
+</p>
 
 A scan is named first; OCR is a means to that end. The engine is the **same
 module `ocr-pdf-watcher` runs** (`ocr-md`, a local MCP server), so an app scan
@@ -193,6 +206,12 @@ The module is discovered from a sibling `ocr-pdf-watcher` checkout, an
 installed `ocr-md`, or `OPENNEXT_OCR_COMMAND`. See
 [`docs/OCR-VISION-NAMING.md`](docs/OCR-VISION-NAMING.md) for the adoption
 notes, command resolution order, naming rules and limits.
+
+<p align="center">
+  <img src="docs/images/ONEXT_Setting.jpg" width="60%" />
+  <img src="docs/images/ONEXT_AI.jpg" width="38%" />
+</p>
+
 
 ## Quick Start (Ubuntu / Linux / Windows)
 
@@ -422,7 +441,10 @@ Five CIS modules at `5,040 / 15,120 / 25,200 / 35,280 / 45,360` units (`4.2 / 12
 
 The scanner is a **raw sensor, not an imaging device** — it delivers raw 16-bit RGB for five camera strips and applies no colour transform in firmware. Cameras 4 and 5 exhibit ~2.6× lower raw red sensitivity than Cameras 1–3, which is corrected on the host via per-camera dark-pedestal subtraction $B_i(\text{ch})$, per-column flat-field division $W_i(\text{col}, \text{ch})$, and the Official Contex IT8.7/2 (`R170829`) colorimetric matrix + gamma.
 
-![colour patch table](docs/images/colour-table.png)
+
+<p align="center">
+  <img src="docs/images/colour-table.jpg" alt="Open.NEXT Scanner Studio" width="50%" />
+</p>
 
 ---
 
