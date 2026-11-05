@@ -874,15 +874,15 @@ fragments — that decoder is discarding half of every record.
 ### 12.1 Physical sensor geometry & channel displacement
 `[O]` The Contex HD Ultra Contact Image Sensor (CIS) modules read Red, Green, and Blue on physically separate sensor lines spaced along the paper transport axis.
 `[D]` Because paper travels continuously under the CIS glass, physical sensor displacement turns into a constant row lag along the Y-axis:
-* At 300 DPI: $\Delta Y_{	ext{Red}} - Y_{	ext{Blue}} pprox +6	ext{ px}$, $\Delta Y_{	ext{Green}} - Y_{	ext{Blue}} pprox +3	ext{ px}$.
-* Because the row lag is an optical transit time converted to pixels by paper speed ($v_{	ext{paper}} \propto 1/	ext{DPI}$), row offsets scale with resolution ($1.5	ext{–}2	imes$ at 400 DPI, reaching $\sim 24	ext{–}30	ext{ px}$ at 1200 DPI).
+* At 300 DPI: $\Delta Y_{\text{Red}} - Y_{\text{Blue}} \approx +6\text{ px}$, $\Delta Y_{\text{Green}} - Y_{\text{Blue}} \approx +3\text{ px}$.
+* Because the row lag is an optical transit time converted to pixels by paper speed ($v_{\text{paper}} \propto 1/\text{DPI}$), row offsets scale with resolution ($1.5\text{–}2\times$ at 400 DPI, reaching $\sim 24\text{–}30\text{ px}$ at 1200 DPI).
 
 `[O]` Uncorrected channel displacement causes severe chromatic fringing (yellow/red/blue halos) on sharp horizontal edges and CAD linework.
 
 ### 12.2 Consensus cross-correlation alignment (`ctx/registration.py`)
-`[D]` Registration must be computed once across a global sample ($\ge 12,000	ext{ rows}$) rather than per small band. Sparse or mostly white bands lack sufficient high-frequency edges and cause inter-band offset jitter, leading to discontinuous rainbow banding.
+`[D]` Registration must be computed once across a global sample ($\ge 12,000\text{ rows}$) rather than per small band. Sparse or mostly white bands lack sufficient high-frequency edges and cause inter-band offset jitter, leading to discontinuous rainbow banding.
 1. Estimate $\Delta Y_R, \Delta Y_G$ via 1D normalized cross-correlation against Blue as reference.
-2. Search window $\pm 	ext{MAX\_LAG\_PX} = 64	ext{ px}$.
+2. Search window $\pm \text{MAX\_LAG\_PX} = 64\text{ px}$.
 3. Shift Red and Green channels vertically using fractional/integer row indices onto Blue prior to color matrix evaluation.
 
 ---
@@ -890,16 +890,16 @@ fragments — that decoder is discarding half of every record.
 ## 13. Banded Spool Wire Stream & Memory-Bounded Processing (v2)
 
 ### 13.1 Wire spooling & memory limits
-`[O]` A 30 ft sheet at 200 DPI generates $\sim 5.9	ext{ GB}$ of raw UDP stream records. In single-pass processing, staging raw records, intermediate float32 camera arrays, and stitched 16-bit composites requires $7	ext{–}10	imes$ RAM ($pprox 40	ext{–}60	ext{ GB}$), leading to OOM termination on 32 GB workstations.
+`[O]` A 30 ft sheet at 200 DPI generates $\sim 5.9\text{ GB}$ of raw UDP stream records. In single-pass processing, staging raw records, intermediate float32 camera arrays, and stitched 16-bit composites requires $7\text{–}10\times$ RAM ($\approx 40\text{–}60\text{ GB}$), leading to OOM termination on 32 GB workstations.
 `[D]` The memory-bounded banded architecture (`ctx/banded.py`):
 1. **Direct Disk Spooling**: High-speed UDP records stream directly to disk (`<scan>.spool` or `<scan>.rec`).
-2. **Row-Banded Processing**: Processes the stream in overlapping row chunks (default 4,000 rows $pprox 20	ext{ in}$ at 200 DPI) with a 200-row cross-fade overlap.
-3. **RAM Ceiling**: Peak memory remains bounded to a single band ($\sim 2	ext{–}3	ext{ GB}$) regardless of whether the document is 3 feet or 50 feet long.
+2. **Row-Banded Processing**: Processes the stream in overlapping row chunks (default 4,000 rows $\approx 20\text{ in}$ at 200 DPI) with a 200-row cross-fade overlap.
+3. **RAM Ceiling**: Peak memory remains bounded to a single band ($\sim 2\text{–}3\text{ GB}$) regardless of whether the document is 3 feet or 50 feet long.
 
 ### 13.2 Format constraints & multi-part JPEG
-`[O]` `libjpeg` has a strict architectural limit of $65,535	ext{ px}$ on both dimensions.
-`[D]` Long documents exceeding $65,535	ext{ rows}$ ($pprox 218	ext{ in}$ at 300 DPI, $pprox 327	ext{ in}$ at 200 DPI):
-* Written as numbered sequential parts (`_part1.jpg`, `_part2.jpg`, etc., $60,000	ext{ rows}$ each).
+`[O]` `libjpeg` has a strict architectural limit of $65,535\text{ px}$ on both dimensions.
+`[D]` Long documents exceeding $65,535\text{ rows}$ ($\approx 218\text{ in}$ at 300 DPI, $\approx 327\text{ in}$ at 200 DPI):
+* Written as numbered sequential parts (`_part1.jpg`, `_part2.jpg`, etc., $60,000\text{ rows}$ each).
 * A companion manifest (`<scan>.meta.json`) defines part offsets and global coordinates.
 * Single-file export automatically switches from JPEG to TIFF when rows exceed 65,535.
 
@@ -909,7 +909,7 @@ fragments — that decoder is discarding half of every record.
 
 ### 14.1 The `0x24 SCANNING` state & roller skew hazard
 `[O]` If a scan is interrupted or an error occurs, the scanner firmware remains in state `0x24 SCANNING` with the document held mid-path in the transport rollers.
-`[CAUTION]` Proprietary vendor software issues an automatic `Unload (0x31, fn=0)` followed by `Load (0x31, fn=1)`. However, `Unload` runs the paper drive at full hardware speed with zero tension feedback. On long ($> 10	ext{ ft}$) or heavy bond sheets, minute roller imbalance walks the media diagonally into the mechanical side guides, causing severe creasing and tearing.
+`[CAUTION]` Proprietary vendor software issues an automatic `Unload (0x31, fn=0)` followed by `Load (0x31, fn=1)`. However, `Unload` runs the paper drive at full hardware speed with zero tension feedback. On long ($> 10\text{ ft}$) or heavy bond sheets, minute roller imbalance walks the media diagonally into the mechanical side guides, causing severe creasing and tearing.
 
 ### 14.2 Safe media protocol
 `[D]` In Open.NEXT v2:
@@ -923,7 +923,7 @@ fragments — that decoder is discarding half of every record.
 
 ### 15.1 Architecture & integration
 `[D]` Large-format scans are cataloged via direct Vision-Language Models (`ctx/vlm.py`):
-1. Downscales preview to $\le 2048	ext{ px}$ preserving aspect ratio and legible title-block typography.
+1. Downscales preview to $\le 2048\text{ px}$ preserving aspect ratio and legible title-block typography.
 2. Encodes as JPEG Base64 and queries local Ollama (`qwen2.5vl:3b`, `qwen3-vl:2b/8b`, `glm-ocr`) or any OpenAI-compatible multimodal endpoint (`/v1/chat/completions`).
 3. Extracts structured JSON metadata:
    * `doc_type`: Classification (`Architectural-Drawing`, `Blueprint`, `Floor-Plan`, `Sectional-Map`, `Fine-Art`, `Photograph`, etc.)
