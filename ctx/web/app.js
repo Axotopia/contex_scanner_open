@@ -2050,6 +2050,16 @@ async function loadOcrStatus() {
     appState.ocrStatus = status;
     // The module owns the default description prompt; Settings shows it.
     syncVisionPromptField();
+    const vlmPill = document.getElementById("vlm-status-pill");
+    if (vlmPill && status.vlm) {
+      if (status.vlm.available) {
+        vlmPill.textContent = `${status.vlm.model || "ready"} (${status.vlm.provider || "ollama"})`;
+        vlmPill.style.color = "#34d399";
+      } else {
+        vlmPill.textContent = status.vlm.reason || "offline";
+        vlmPill.style.color = "#f87171";
+      }
+    }
     if (!status.available) {
       alert.textContent = `Auto describe unavailable — ${status.reason || "OCR module not found"}`;
       alert.title = status.reason || "";
@@ -2260,6 +2270,12 @@ function syncSettingsForm() {
   setJpegQualityValue(s.jpg_quality != null ? s.jpg_quality : 95);
   document.getElementById("set-tiff-16bit").checked = !!s.tiff_16bit;
   document.getElementById("set-debug-mode").checked = !!s.debug_mode;
+  const vlmEp = document.getElementById("set-vlm-endpoint");
+  if (vlmEp) vlmEp.value = s.vlm_endpoint || "http://localhost:11434/v1";
+  const vlmModel = document.getElementById("set-vlm-model");
+  if (vlmModel) vlmModel.value = s.vlm_model || "auto";
+  const vlmKey = document.getElementById("set-vlm-key");
+  if (vlmKey) vlmKey.value = s.vlm_api_key || "";
 
   // Scan Setup owns the seam blend (the duplicate in this modal was removed), so
   // seed the dock from settings only until the operator changes it -- otherwise a
@@ -2306,6 +2322,9 @@ async function saveSettings() {
     ocr_vision_prompt: visionPrompt,
     photocraft_url: document.getElementById("set-photocraft-url").value.trim(),
     photocraft_api_key: document.getElementById("set-photocraft-key").value.trim(),
+    vlm_endpoint: (document.getElementById("set-vlm-endpoint")?.value || "").trim(),
+    vlm_model: (document.getElementById("set-vlm-model")?.value || "").trim(),
+    vlm_api_key: (document.getElementById("set-vlm-key")?.value || "").trim(),
   };
 
   await fetch("/api/settings", {
@@ -2444,6 +2463,12 @@ function connectWebSocket() {
         hideCancelButton();
         stopScanActivity();
         setPipelineStep(1, `Scan error: ${msg.error || "unknown"}`);
+      } else if (msg.type === "scan_ocr") {
+        const desc = msg.title || msg.slug || msg.name?.slug || msg.name?.stem || "Cataloged";
+        setPipelineStep(4, `Auto describe: ${desc}`);
+        if (appState.currentJob && appState.currentJob.scan_id === msg.scan_id) {
+          refreshStatus();
+        }
       } else if ((msg.type === "drift_resolved" || msg.type === "ai_enhanced") && msg.scan_id) {
         loadJobIntoUI(msg, false);
         refreshStatus();

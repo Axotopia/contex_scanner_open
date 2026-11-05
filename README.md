@@ -1,4 +1,4 @@
-# Contex HD Ultra i4250s — Ubuntu Scanner Studio, Driver & MCP Server
+# Contex HD Ultra i4250s — Open.NEXT v2.0 Studio, Driver, VLM & MCP Server
 
 Modern cross-platform scanner application, Model Context Protocol (MCP) server, and SCSI-over-TCP/UDP driver for the **Contex HD Ultra i4250s** 42-inch 5-camera large-format scanner — built to replace Contex's Windows `.NET` **WIDEsystem** and **Nextimage** applications on **Ubuntu Linux** (with a clean 2-stage path to standalone Linux/Windows desktop packaging).
 
@@ -125,7 +125,21 @@ Review in the viewer ──► Save current view (TIFF / JPG / PDF) ──► Au
 
 ---
 
-## Naming, OCR & Descriptive Filenames
+## Naming, OCR & Vision-Language LLM (Auto Describe)
+
+A scan is cataloged and named through visual understanding. Open.NEXT v2.0 features a **built-in Vision-Language LLM (VLM) engine** ([`ctx/vlm.py`](ctx/vlm.py)) that integrates directly with local **Ollama** instances (`qwen2.5vl:3b`, `qwen3-vl:2b/8b`, `glm-ocr`, `llama3.2-vision`) or any OpenAI-compatible multimodal API, alongside the optional external `ocr-md` bridge.
+
+- **Direct Multimodal AI Cataloging**:
+  - Automatically downscales large-format scans to 2048 px (preserving full title block and visual legibility).
+  - In **2–4 seconds**, the VLM extracts:
+    - `doc_type`: e.g. `Architectural-Drawing`, `Blueprint`, `Floor-Plan`, `Sectional-Map`, `Fine-Art`, `Photograph`.
+    - `title`: Extracted formal sheet title or project name.
+    - `description`: Clean professional 1–2 sentence summary of content, layout, and style.
+    - `visible_text`: Text extracted from title blocks, revision blocks, legends, and stamps.
+    - `slug`: Hyphenated, date-free filename segment (e.g. `Ground-Floor-Plan`, `Manhattan-Zoning-Map`).
+    - `tags`: Search tags/keywords.
+  - Automatically renames all exported files (TIFF, JPG, PDF) to `<Prefix>_<YYMMDDHHMM>_<NNNN>_<DocType>_<Slug>.<ext>` and writes a `.meta.json` sidecar without requiring external OCR daemons.
+
 
 A scan is named first; OCR is a means to that end. The engine is the **same
 module `ocr-pdf-watcher` runs** (`ocr-md`, a local MCP server), so an app scan
@@ -361,12 +375,16 @@ The suite covers the protocol/CDB guards, calibration math, the official-sheet w
 In addition to `ctx app` and `ctx mcp`, the command-line tool provides direct protocol utilities:
 
 ```bash
-python3 -m ctx discover                     # UDP 58169 broadcast discovery
-python3 -m ctx info --ip 0.0.0.0             # Read-only INQUIRY + VPD capability pages (placeholder IP)
-python3 -m ctx plan --dpi 300 --width-in 42 # Print the command sequence without I/O
-python3 -m ctx scan --out scan-name         # Run a low-level scan to .bin + .jsonl
-python3 -m ctx param --buffer 0xbf          # READ BUFFER parameter block dump
-python3 -m ctx pcap capture.pcapng          # Offline capture reassembly
+python3 -m ctx app --bind 127.0.0.1 --http-port 8080 # Launch Studio WebUI & REST server
+python3 -m ctx mcp                                   # Launch Model Context Protocol (MCP) server
+python3 -m ctx longscan --from-rec CAPTURE.rec       # Memory-bounded banded stitcher (<3 GB peak RAM)
+python3 -m ctx rescue STITCHED.jpg                   # Channel-registration repair for misaligned captures
+python3 -m ctx discover                              # UDP 58169 broadcast discovery
+python3 -m ctx info --ip 0.0.0.0                     # Read-only INQUIRY + VPD capability pages (placeholder IP)
+python3 -m ctx plan --dpi 300 --width-in 42          # Print the command sequence without I/O
+python3 -m ctx scan --out scan-name                  # Run a low-level scan to .bin + .jsonl
+python3 -m ctx param --buffer 0xbf                   # READ BUFFER parameter block dump
+python3 -m ctx pcap capture.pcapng                   # Offline capture reassembly
 ```
 
 ---

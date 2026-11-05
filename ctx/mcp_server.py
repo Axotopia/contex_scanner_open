@@ -301,7 +301,10 @@ def scan_describe(path: str, prompt: str | None = None) -> dict[str, Any]:
     vision-description prompt for this one call.
     """
     try:
-        return get_workspace().ocr_bridge().describe(path, prompt=prompt)
+        ws = get_workspace()
+        if ws.ocr_bridge().available():
+            return ws.ocr_bridge().describe(path, prompt=prompt)
+        return ws.vlm.describe(path, prompt=prompt)
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "path": path, "error": str(exc)}
 

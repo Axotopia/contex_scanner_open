@@ -898,6 +898,24 @@
         <div class="muted-text" id="ocr-build-line" style="font-size:11px; margin-top:6px;"></div>
 
         <hr class="divider" />
+        <h3 style="font-size:12px; font-weight:700; color:#cbd5e1;">Auto Describe — Vision-Language LLM (VLM)</h3>
+        <p class="muted-text" style="font-size:11px; margin:0;">
+          Direct multimodal AI engine for automated cataloging, title-block parsing, and descriptive naming. Works out-of-the-box with local Ollama (<span id="vlm-status-pill" style="color:#38bdf8;">auto-detect</span>) or any OpenAI-compatible VLM endpoint.
+        </p>
+        <label class="field">
+          <span>VLM Endpoint URL</span>
+          <input type="text" id="set-vlm-endpoint" placeholder="http://localhost:11434/v1" />
+        </label>
+        <label class="field">
+          <span>VLM Model Name</span>
+          <input type="text" id="set-vlm-model" placeholder="auto (e.g. qwen2.5vl:3b, qwen3-vl:2b, llama3.2-vision)" />
+        </label>
+        <label class="field">
+          <span>API Key (Optional for local Ollama)</span>
+          <input type="password" id="set-vlm-key" placeholder="Bearer token (leave empty for local models)..." />
+        </label>
+
+        <hr class="divider" />
         <h3 style="font-size:12px; font-weight:700; color:#cbd5e1;">Auto Describe — Vision Prompt</h3>
         <p class="muted-text" style="font-size:11px; margin:0;">
           Instructions sent to the vision model when <strong>Auto describe</strong> reads a

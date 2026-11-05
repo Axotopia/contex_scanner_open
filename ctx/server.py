@@ -36,6 +36,7 @@ from pydantic import BaseModel, Field
 
 from .ai import EnhancementOptions
 from .ocr_bridge import OcrBridge, OcrBridgeError, normalize_vision_prompt
+from .vlm import VlmEngine, VlmConfig, DEFAULT_DESCRIBE_PROMPT
 from .calibration import (
     DEFAULT_GAPS,
     DEFAULT_SERIAL,
@@ -308,6 +309,12 @@ class AppSettings:
     # then starts a live scan, which is a physical action.  Only SCAN is wired
     # for now; COPY/EMAIL emit events but do nothing until we decide what they
     # should do.
+    # Vision-Language LLM (VLM) for Auto-Describe & cataloging
+    vlm_enabled: bool = True
+    vlm_provider: str = "auto"         # auto | ollama | openai | disabled
+    vlm_endpoint: str = "http://localhost:11434/v1"
+    vlm_model: str = "auto"
+    vlm_api_key: str = ""
     panel_keys_enabled: bool = False
     panel_scan_on_keys: list[str] = field(default_factory=lambda: ["scan"])
 
@@ -416,6 +423,11 @@ class AppSettings:
                 str(key): str(value)
                 for key, value in (d.get("ocr_cloud_env") or {}).items()
             },
+            vlm_enabled=bool(d.get("vlm_enabled", True)),
+            vlm_provider=str(d.get("vlm_provider", "auto")),
+            vlm_endpoint=str(d.get("vlm_endpoint", "http://localhost:11434/v1")),
+            vlm_model=str(d.get("vlm_model", "auto")),
+            vlm_api_key=str(d.get("vlm_api_key", "")),
             panel_keys_enabled=bool(d.get("panel_keys_enabled", False)),
             panel_scan_on_keys=list(d.get("panel_scan_on_keys", ["scan"])),
         )
@@ -532,6 +544,16 @@ class ScanWorkspaceManager:
         self._ocr_cloud_bridge: OcrBridge | None = None
         self._ocr_cloud_key: tuple[tuple[str, str], ...] | None = None
         self._ocr_health = OcrHealth()
+        self.vlm = VlmEngine(
+            VlmConfig(
+                enabled=self.settings.vlm_enabled,
+                provider=self.settings.vlm_provider,
+                endpoint=self.settings.vlm_endpoint,
+                model=self.settings.vlm_model,
+                api_key=self.settings.vlm_api_key,
+                timeout_sec=float(self.settings.ocr_local_timeout_sec or 60.0),
+            )
+        )
         if self.settings.panel_keys_enabled:
             self.panel.start()
 
@@ -590,6 +612,7 @@ class ScanWorkspaceManager:
         return self._ocr_cloud_bridge
 
     def ocr_status(self) -> dict[str, Any]:
+        vlm_status = self.vlm.status()
         try:
             bridge = self.ocr_bridge()
             status = bridge.status()
@@ -602,9 +625,33 @@ class ScanWorkspaceManager:
                 "local_outcomes": self._ocr_health.outcomes,
                 "local_timeout_sec": self.settings.ocr_local_timeout_sec,
             }
+            status["vlm"] = vlm_status
+            if not status.get("available") and vlm_status.get("available"):
+                status["available"] = True
+                status["engine"] = "vlm"
+                status["model"] = vlm_status.get("model")
+                status["provider"] = vlm_status.get("provider")
+                status["reason"] = vlm_status.get("reason") or f"VL LLM ({vlm_status.get('model')}) ready"
+                status["vision"] = {
+                    "ready": True,
+                    "describe_prompt": normalize_vision_prompt(self.settings.ocr_vision_prompt) or DEFAULT_DESCRIBE_PROMPT,
+                }
             return status
         except Exception as exc:  # noqa: BLE001 - status must never raise
-            return {"available": False, "reason": str(exc)}
+            if vlm_status.get("available"):
+                return {
+                    "available": True,
+                    "engine": "vlm",
+                    "model": vlm_status.get("model"),
+                    "provider": vlm_status.get("provider"),
+                    "reason": vlm_status.get("reason") or f"VL LLM ({vlm_status.get('model')}) ready",
+                    "vlm": vlm_status,
+                    "vision": {
+                        "ready": True,
+                        "describe_prompt": normalize_vision_prompt(self.settings.ocr_vision_prompt) or DEFAULT_DESCRIBE_PROMPT,
+                    },
+                }
+            return {"available": False, "reason": str(exc), "vlm": vlm_status}
 
     def _ocr_source(self, job: ScanJob) -> str | None:
         """The file handed to the OCR module for this job (``None`` if nothing)."""
@@ -733,6 +780,10 @@ class ScanWorkspaceManager:
             raise ValueError(
                 "this scan has no exported file to describe yet; export at least one format first"
             )
+        # If external OCR bridge is absent or VLM is available, run direct VLM describe
+        if not self.ocr_bridge().available() and self.vlm.status().get("available"):
+            return self._describe_with_vlm(job, source, overrides)
+
         options = self._ocr_options()
         options.update({key: value for key, value in overrides.items() if value is not None})
         if image_only is not None:
@@ -760,6 +811,100 @@ class ScanWorkspaceManager:
             {"scan_id": scan_id, "name": result.get("name", {}), "route": route},
         )
         return result
+
+    def _describe_with_vlm(
+        self, job: ScanJob, source: str, overrides: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Describe and name a scan using the native Vision-Language LLM."""
+        prompt = overrides.get("prompt") or normalize_vision_prompt(self.settings.ocr_vision_prompt) or None
+        preview = self.preview_cache_dir / job.scan_id / "preview_preset.png"
+        img_src = str(preview) if preview.is_file() else source
+        started = time.monotonic()
+        vlm_res = self.vlm.describe(
+            img_src,
+            prompt=prompt,
+            timeout=float(self.settings.ocr_local_timeout_sec or 60.0),
+        )
+        route = {
+            "attempts": 1,
+            "named_by": "vlm",
+            "route": "native-vlm",
+            "latency_ms": int((time.monotonic() - started) * 1000),
+            "model": vlm_res.get("model"),
+            "provider": vlm_res.get("provider"),
+        }
+        result = {
+            "ok": True,
+            "name": {"stem": vlm_res.get("stem"), "slug": vlm_res.get("slug")},
+            "doc_type": vlm_res.get("doc_type"),
+            "title": vlm_res.get("title"),
+            "description": vlm_res.get("description"),
+            "visible_text": vlm_res.get("visible_text"),
+            "tags": vlm_res.get("tags"),
+            "vlm": vlm_res,
+            "route": route,
+        }
+        self._apply_naming_vlm(job, result)
+        job.ocr = result
+        self._write_scan_meta(job, list(job.exported.get("files") or []))
+        self.broadcast_event(
+            "scan_ocr",
+            {
+                "scan_id": job.scan_id,
+                "name": result.get("name", {}),
+                "route": route,
+                "title": vlm_res.get("title"),
+                "description": vlm_res.get("description"),
+                "slug": vlm_res.get("slug"),
+                "adopted_stem": result.get("adopted_stem"),
+            },
+        )
+        return result
+
+    def _apply_naming_vlm(self, job: ScanJob, result: dict[str, Any]) -> None:
+        """Apply VLM-generated descriptive stem to all exported files of this scan."""
+        stem_raw = result.get("name", {}).get("stem") or result.get("stem") or ""
+        if not stem_raw:
+            return
+        stem = self._final_name(job, stem_raw)
+        if not stem:
+            return
+
+        files = list(job.exported.get("files") or [])
+        out_dir = Path(self.settings.output_dir)
+        adopted = 0
+        for item in files:
+            current = Path(str(item.get("path") or ""))
+            if not current.is_file():
+                continue
+            suffix = current.suffix
+            variant = self._render_suffix(job, current)
+            target = out_dir / f"{stem}{variant}{suffix}"
+            if target == current:
+                adopted += 1
+                continue
+            if target.exists():
+                target = self._unique_target(target)
+            try:
+                current.rename(target)
+            except OSError as exc:
+                self.broadcast_event(
+                    "scan_ocr_warning",
+                    {"scan_id": job.scan_id, "warning": f"could not rename {current.name}: {exc}"},
+                )
+                continue
+            item["path"] = str(target)
+            try:
+                item["size_bytes"] = target.stat().st_size
+            except OSError:
+                pass
+            adopted += 1
+
+        if adopted:
+            job.exported["files"] = files
+            self._write_scan_meta(job, files, stem=stem)
+        result["adopted_stem"] = stem
+        result["renamed_exports"] = adopted
 
     def _apply_naming(
         self, job: ScanJob, source: str, result: dict[str, Any]
@@ -972,14 +1117,16 @@ class ScanWorkspaceManager:
         filename, and ``title_block`` is the structured block when one was found.
         """
         name = result.get("name") or {}
-        vision = result.get("vision") or {}
+        vision = result.get("vision") or result.get("vlm") or {}
         return {
             "schema": 1,
             "named": bool(name.get("stem")),
             "description": result.get("description") or "",
-            "doc_type": name.get("doc_type"),
+            "doc_type": result.get("doc_type") or name.get("doc_type"),
             "subject": name.get("subject"),
-            "title": name.get("title"),
+            "title": result.get("title") or name.get("title"),
+            "visible_text": result.get("visible_text") or "",
+            "tags": result.get("tags") or [],
             "entity": name.get("entity"),
             "date": name.get("date"),
             "confidence": name.get("confidence"),
@@ -1186,6 +1333,14 @@ class ScanWorkspaceManager:
         self.engine.host = self.settings.scanner_ip
         self.preview_cache_dir = Path(self.settings.output_dir) / ".previews"
         self.preview_cache_dir.mkdir(parents=True, exist_ok=True)
+        self.vlm.update_config(
+            enabled=self.settings.vlm_enabled,
+            provider=self.settings.vlm_provider,
+            endpoint=self.settings.vlm_endpoint,
+            model=self.settings.vlm_model,
+            api_key=self.settings.vlm_api_key,
+            timeout_sec=float(self.settings.ocr_local_timeout_sec or 60.0),
+        )
         self._save_settings(self.settings)
         self.panel.host = self.settings.scanner_ip
         return self.settings
