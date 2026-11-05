@@ -857,14 +857,32 @@ class PresetStore:
         latest_bak.unlink()
         return self.get_preset(preset_id)
 
+    def rename_preset(self, preset_id: str, new_name: str) -> CalibrationPreset:
+        """Change the display name only; the id/file stay stable for references."""
+        path = self.base_dir / f"{preset_id}.json"
+        if not path.exists():
+            raise KeyError(f"Calibration preset {preset_id!r} not found")
+        name = " ".join(str(new_name or "").split()).strip()
+        if not name:
+            raise ValueError("Preset name cannot be empty")
+        preset = CalibrationPreset.from_dict(json.loads(path.read_text(encoding="utf-8")))
+        preset.name = name[:80]
+        self.save_preset(preset, backup=True)
+        return preset
+
     def delete_preset(self, preset_id: str) -> bool:
         path = self.base_dir / f"{preset_id}.json"
         if not path.exists():
             return False
-        preset = self.get_preset(preset_id)
+        preset = CalibrationPreset.from_dict(json.loads(path.read_text(encoding="utf-8")))
         if preset.is_builtin:
             raise ValueError("Cannot delete a built-in preset")
         path.unlink()
+        for backup in self.base_dir.glob(f"{preset_id}.json.bak-*"):
+            try:
+                backup.unlink()
+            except OSError:
+                pass
         return True
 
 
@@ -880,6 +898,7 @@ def apply_camera_calibration(
     auto_adjust_margins: bool = False,
     gaps: list[tuple[int, int]] | None = None,
     registration_out: dict[str, Any] | None = None,
+    registration_dy: tuple[float, float] | None = None,
 ) -> tuple[list[tuple[str, np.ndarray, dict[str, Any]]], float, list[dict[str, Any]]]:
     """Apply per-camera flat-field + dark pedestal correction in camera order ``cam1..cam5``.
 
@@ -897,7 +916,7 @@ def apply_camera_calibration(
         gaps = module_gaps(raster.mean(axis=2, dtype=np.float32))
     pmeta = piece_matrix(gaps, raster.shape[1])
     cams = raw_camera_images(raster, pmeta, CAMERAS)
-    cams, channel_reg = register_cameras(cams)
+    cams, channel_reg = register_cameras(cams, forced_dy=registration_dy)
     if registration_out is not None:
         registration_out.update(channel_reg)
     live_blacks = extract_black_levels(raster, pmeta, CAMERAS)

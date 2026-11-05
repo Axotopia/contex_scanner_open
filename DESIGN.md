@@ -328,7 +328,8 @@ maths, the stitching arithmetic. All of this is a few days of ordinary work.
 
 ## 11. Colour pipeline as built (2026-10-26) — flat field, drift analyzer, recalibrate paths
 
-Measured and implemented in `ctx/calibration.py`. This section is the design-of-record so the
+Measured and implemented this session; full record in
+`engineering/analysis/color/COLOR-REPORT.md`. This section is the design-of-record so the
 integration is not forgotten.
 
 ### 11.1 What was measured (facts that shape the design)
@@ -346,7 +347,7 @@ integration is not forgotten.
   against cameras A–C, with B comparable — a per-camera spectral difference.
 * The 42″ window (12,600 px) is narrower than the camera array (13,640 px):
   camera 5's overhang is **cropped, never wrapped** (the old render's rotation
-  was a bug). Stitching owns this in `ctx/pipeline.py`.
+  was a bug). Stitching owns this; see the stitching analysis notes in the private development tree (`engineering/analysis/`).
 
 ### 11.2 The correction (built)
 
@@ -359,18 +360,18 @@ white-profile medians (locally adaptive white mask, dead band excluded,
 strip-0 background excluded, linear interp, edge-padded smooth); K = camera
 A's mean white. Result: per-camera chroma spread 0.134 → 0.0006–0.0011,
 seam steps ≤166 u16 (below the measured noise floor). Fit + apply code:
-`ctx/calibration.py`.
+`selfcal.py`/`calib_lib.py` in the private development tree (`engineering/analysis/color/`).
 
 ### 11.3 Calibration data (built)
 
-`ctx/data/calib.json`, schema `scanner-color/flatfield-v1-app`:
+`calib.json` from the private development tree (`engineering/analysis/color/`), schema `scanner-color/flatfield-v1-app`:
 
 ```jsonc
 {
   "schema": "scanner-color/flatfield-v1-app",
   "K":     {"R": 40305, "G": 41857, "B": 44098},
   "W":     {"0": {"R": [/* 85 groups */], "G": [...], "B": [...]}, /* cameras 1..4 */ },
-  "source": "calib_flatfield.json",
+  "source": "gridsheet-scan.rec",
   "fitted": "2026-10-26T15:44:48"
 }
 ```
@@ -387,7 +388,6 @@ it is a single-unit workspace.
    scan with the standard recipe, fit W, **gate the write** on the acceptance
    numbers (seam steps < noise floor, chroma spread small), back up the
    previous file. CLI form of everything after "scan":
-   `ctx.calibration.promote_margin_calibration_to_preset(...)`.
 2. **Recalibrate from scan margins** (no sheet): any scan with white margins
    can promote its own self-fit — this is what the drift popup's
    "Recalibrate" does. Absorbs lamp drift, sheet-side differences and
@@ -399,7 +399,7 @@ it is a single-unit workspace.
 
 ### 11.5 Drift analyzer (built)
 
-`ctx.calibration.check_operating_drift` — run after each scan (or on demand):
+The drift analyzer (private development tree: `engineering/tools/colour_drift.py`; shipped equivalent in `ctx/pipeline.py`) — run after each scan (or on demand):
 
 * Measures the residual per-camera chroma spread and white-level deviation the
   **stored** calibration leaves on the scan's own white margins, and compares
@@ -438,5 +438,5 @@ it is a single-unit workspace.
       D–E): per-camera 3×3 matrix + offset fitted on the overlap after the
       flat field — the chart path of §6.2/§6.3 remains the plan; the flat
       field is its prerequisite.
-- [x] Stitching: implemented in `ctx/pipeline.py` (crop camera 5's overhang,
+- [ ] Stitching: see the stitching analysis notes in the private development tree (crop camera 5's overhang,
       never wrap).

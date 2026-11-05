@@ -169,8 +169,16 @@ def register_cameras(
     max_lag: int = MAX_LAG_PX,
     min_quality: float = MIN_QUALITY,
     strong_quality: float = STRONG_QUALITY,
+    forced_dy: tuple[float, float] | None = None,
 ) -> tuple[list[tuple[str, np.ndarray]], dict[str, Any]]:
     """Estimate and apply one consensus channel shift across all cameras.
+
+    ``forced_dy`` skips estimation and applies ``(dy_red, dy_green)`` as given.
+    Band-wise processing uses this to measure the shift once over a large sample
+    and apply that single answer to every band: estimating per band lets sparse,
+    mostly-blank strips disagree with each other, and the bands then differ by
+    rows of misregistration (measured 2026-11-02: band 1 off by 5 rows while
+    later bands were aligned, which shows up as rainbow fringing).
 
     A single consensual shift is used deliberately: per-camera shifts would break
     the continuity of horizontal lines across the four camera joins, which is a
@@ -190,6 +198,26 @@ def register_cameras(
     cams = list(cams)
     if not enabled or not cams:
         return cams, {"applied": False, "reason": "disabled"}
+
+    if forced_dy is not None:
+        dy_red, dy_green = float(forced_dy[0]), float(forced_dy[1])
+        if abs(dy_red) < 0.05 and abs(dy_green) < 0.05:
+            return cams, {
+                "applied": True,
+                "dy_red_px": round(dy_red, 3),
+                "dy_green_px": round(dy_green, 3),
+                "reason": "forced global estimate (already aligned)",
+                "forced": True,
+            }
+        with ThreadPoolExecutor(max_workers=min(len(cams), 8)) as ex:
+            corrected = list(ex.map(lambda c: (c[0], apply_offsets(c[1], dy_red, dy_green)), cams))
+        return corrected, {
+            "applied": True,
+            "dy_red_px": round(dy_red, 3),
+            "dy_green_px": round(dy_green, 3),
+            "reason": "forced global estimate",
+            "forced": True,
+        }
 
     # Multithreaded offset estimation
     names = [c[0] for c in cams]

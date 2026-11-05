@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Open.NEXT — Contex Scan AI Studio (MCP)</title>
-  <link rel="stylesheet" href="/static/styles.css?v=1793238200" />
+  <link rel="stylesheet" href="/static/styles.css?v=1793645265" />
 </head>
 <body>
 
@@ -100,9 +100,9 @@
               <span>Scan Source</span>
               <select id="scan-source" onchange="onSourceChange(); persistScanSettings()">
                 <option value="live" selected>Live Hardware (Contex i4250s @ TCP/UDP 58170)</option>
+                <option value="rec_file">Offline Capture (.rec File)</option>
                 <option value="demo_architectural">Demo: 3D Architectural Drawing + IT8</option>
                 <option value="demo_artwork">Demo: Full-Bleed Artwork / Photo</option>
-                <option value="rec_file">Offline Capture (.rec File)</option>
               </select>
             </label>
 
@@ -120,7 +120,7 @@
 
             <!-- Paper Size -->
             <label class="field">
-              <span>Paper Size / Auto-Width</span>
+              <span id="paper-size-label">Paper Size / Auto-Width [ Feed Width 42.0" ]</span>
               <select id="scan-paper-size" onchange="onPaperSizeChange(); persistScanSettings()">
                 <option value="auto">Auto-Detect Width (Nextimage DetectSize)</option>
                 <option value="full_42" selected>Full Sensor Width (42.0" / 1067 mm)</option>
@@ -146,16 +146,16 @@
               </select>
             </label>
 
-            <!-- Orientation -->
+            <!-- Orientation Row -->
             <div class="field" id="orientation-field">
-              <span>Orientation (Feed Width)</span>
-              <div class="segmented" role="group" aria-label="Paper orientation">
-                <button type="button" class="seg-btn active" data-orientation="portrait" disabled onclick="setOrientation('portrait')">Portrait</button>
-                <button type="button" class="seg-btn" data-orientation="landscape" disabled onclick="setOrientation('landscape')">Landscape</button>
+              <div class="orientation-controls-row">
+                <div class="segmented" role="group" aria-label="Paper orientation" style="flex:1;">
+                  <button type="button" class="seg-btn active" data-orientation="portrait" disabled onclick="setOrientation('portrait')">Portrait</button>
+                  <button type="button" class="seg-btn" data-orientation="landscape" disabled onclick="setOrientation('landscape')">Landscape</button>
+                </div>
+                <input type="number" id="scan-width" value="42.0" min="4.0" max="42.0" step="0.25" disabled onchange="persistScanSettings()"
+                       style="display:none; width:80px;" title="Custom cross-feed width in inches" />
               </div>
-            </div>
-            <div class="muted-text" id="paper-width-hint" style="margin-top:-3px;">
-              Pick a standard sheet size to choose portrait or landscape.
             </div>
 
             <!-- Demo platen sheet simulation -->
@@ -171,91 +171,31 @@
               </select>
             </label>
 
-            <!-- Resolution & Width -->
+            <!-- Resolution (DPI) & Color Mode Row -->
             <div class="row-2">
-              <label class="field">
-                <span>Width (in)</span>
-                <input type="number" id="scan-width" value="42.0" min="4.0" max="42.0" step="0.25" disabled onchange="persistScanSettings()" />
-              </label>
-              <label class="field" title="Ask = show the drift comparison dialog; Auto-correct = apply the margin self-calibration silently; Off = skip the drift analysis and the corrected render (fastest, for bulk scanning)">
-                <span>Colour / Temp Drift Check</span>
-                <select id="scan-drift-policy" onchange="onDriftPolicyChange()">
-                  <option value="prompt">Ask before applying</option>
-                  <option value="auto_adjust">Auto-correct silently</option>
-                  <option value="disabled">Off — bulk, fastest</option>
-                </select>
-              </label>
               <label class="field">
                 <span>Resolution (DPI)</span>
                 <select id="scan-dpi" onchange="persistScanSettings()">
                   <option value="100">100 DPI (Draft)</option>
                   <option value="200">200 DPI (CAD)</option>
-                  <option value="300" selected>300 DPI (Native Master)</option>
+                  <option value="300" selected>300 DPI (Default)</option>
                   <option value="400">400 DPI (Fine)</option>
                   <option value="600">600 DPI (Optical Max)</option>
                   <option value="1200">1200 DPI (Ultra-HD)</option>
                 </select>
               </label>
-            </div>
-
-            <!-- Color Mode -->
-            <label class="field">
-              <span>Color Mode</span>
-              <select id="scan-color-mode" onchange="persistScanSettings()">
-                <option value="color">Color (24-bit RGB)</option>
-                <option value="grayscale">Grayscale (8-bit Gray)</option>
-              </select>
-            </label>
-
-            <!-- Calibration Preset -->
-            <label class="field">
-              <span>Active Calibration Preset</span>
-              <div class="preset-row">
-                <select id="scan-preset" onchange="persistScanSettings()"></select>
-                <button class="btn btn-xs btn-secondary" onclick="rollbackActivePreset()" title="Revert preset to previous .bak">
-                  ↶ Undo
-                </button>
-              </div>
-            </label>
-
-            <!-- Collapsible Advanced Seam Tuning -->
-            <div class="accordion-box" id="advanced-seam-box">
-              <button type="button" class="accordion-header" aria-expanded="false"
-                      aria-controls="advanced-seam-body" onclick="toggleAccordion('advanced-seam-box')">
-                <span>⚙ Advanced Seam &amp; Feather Tuning</span>
-                <span class="accordion-arrow" id="advanced-seam-arrow">▸</span>
-              </button>
-              <div class="accordion-body" id="advanced-seam-body" hidden style="display:none;">
-                <label class="checkbox-field" title="Equalize &amp; feather per-scan analog color/luminance variations across adjacent pixels at the 4 camera seams">
-                  <input type="checkbox" id="scan-seam-blend" checked onchange="toggleScanSeamBlendControls()" />
-                  <span>Blend Seam Variations (4 Joins)</span>
-                </label>
-
-                <div id="scan-seam-blend-controls" style="display:flex; flex-direction:column; gap:8px;">
-                  <div class="row-2">
-                    <label class="field">
-                      <span>Blend Width: <strong id="scan-blend-width-lbl">±128 px</strong></span>
-                      <input type="range" id="scan-blend-width" min="16" max="1024" step="8" value="128" oninput="onScanBlendAdjustChange()" />
-                    </label>
-                    <label class="field">
-                      <span>Strength: <strong id="scan-blend-str-lbl">85%</strong></span>
-                      <input type="range" id="scan-blend-strength" min="10" max="100" step="5" value="85" oninput="onScanBlendAdjustChange()" />
-                    </label>
-                  </div>
-                  <label class="field">
-                    <span>Feather Style</span>
-                    <select id="scan-feather-mode" onchange="persistScanSettings()">
-                      <option value="classic">Classic — crisp, for line art</option>
-                      <option value="artwork">Artwork — soft, wide colour feather</option>
-                    </select>
-                  </label>
-                </div>
-              </div>
+              <label class="field">
+                <span>Color Mode</span>
+                <select id="scan-color-mode" onchange="persistScanSettings()">
+                  <option value="color">Color RGB (24-bit)</option>
+                  <option value="grayscale">Grayscale (8-bit)</option>
+                </select>
+              </label>
             </div>
 
           </section>
 
-          <!-- 2. Thermal / Operating Temp Drift Card -->
+          <!-- 2. Sensor Temp & Color Drift Card -->
           <section class="card" id="drift-card">
             <div class="card-header-row">
               <h2>
@@ -263,6 +203,107 @@
                 Sensor Temp &amp; Color Drift
               </h2>
               <span id="drift-badge" class="pill pill-neutral">No Scan Yet</span>
+            </div>
+
+            <!-- Colour / Temp Drift Check -->
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:10px;" title="Check white margins across Cameras 1–5 for thermal lamp shifts">
+              <label class="checkbox-field" style="margin:0; white-space:nowrap; flex:1 1 auto;">
+                <input type="checkbox" id="scan-drift-enabled" checked onchange="onDriftPolicyChange()" />
+                <span>Colour / Temp Drift Check</span>
+              </label>
+              <label class="field" style="margin:0; flex:0 0 115px;">
+                <select id="scan-drift-action" onchange="onDriftPolicyChange()" title="Drift correction action">
+                  <option value="prompt">Ask</option>
+                  <option value="auto_adjust">Auto-Correct</option>
+                </select>
+              </label>
+            </div>
+
+            <!-- Calibration Preset -->
+            <label class="field">
+              <span>Active Calibration Preset</span>
+              <div class="preset-row">
+                <select id="scan-preset" onchange="persistScanSettings()"></select>
+                <div class="preset-actions">
+                  <button class="btn btn-xs btn-secondary" onclick="rollbackActivePreset()" title="Revert preset to previous .bak">
+                    ↶ Undo
+                  </button>
+                  <button class="btn btn-xs btn-secondary" onclick="renameActivePreset()" title="Rename the selected preset (keeps its id and file)">
+                    Rename
+                  </button>
+                  <button class="btn btn-xs btn-secondary" onclick="deleteActivePreset()" title="Delete the selected preset and its backups">
+                    Delete
+                  </button>
+                </div>
+              </div>
+            </label>
+
+            <!-- Long document: spool to disk + stitch in bands -->
+            <div class="row-2" style="align-items: center;">
+              <label class="checkbox-field" style="margin:0;" title="Spool the stream to disk and stitch in row bands. Required for sheets longer than ~10 ft at 200 dpi: the normal path holds the whole sheet in RAM and would be OOM-killed.">
+                <input type="checkbox" id="scan-long-mode" onchange="persistScanSettings()" />
+                <span>Long document (banded)</span>
+              </label>
+              <label class="field" style="margin:0;">
+                <input type="number" id="scan-band-rows" value="4000" min="500" max="20000" step="500"
+                       onchange="persistScanSettings()" title="Rows per band (4000 = 20 in at 200 dpi)" />
+              </label>
+            </div>
+
+            <!-- Long document output + saved captures -->
+            <div class="row-2" style="align-items: center;">
+              <label class="field" style="margin:0;">
+                <select id="scan-long-format" onchange="persistScanSettings()"
+                        title="JPEG cannot exceed 65,535 rows (~218 in at 300 dpi, ~327 in at 200 dpi); TIFF has no such limit">
+                  <option value="auto-single">Single file — auto (JPG, else TIFF)</option>
+                  <option value="jpg-parts">JPG — split into parts</option>
+                  <option value="jpg-single">JPG — single file</option>
+                  <option value="tiff-single">TIFF — single file</option>
+                </select>
+              </label>
+              <label class="field" style="margin:0;">
+                <input type="number" id="scan-capture-keep" value="1" min="0" max="10" step="1"
+                       onchange="persistScanSettings()"
+                       title="How many .rec captures to keep (newest first); older ones are pruned" />
+              </label>
+            </div>
+            <div id="long-captures" class="long-captures"></div>
+
+            <!-- Blend Seam & Feather Tuning -->
+            <div class="row-2" style="align-items: center;">
+              <label class="checkbox-field" style="margin:0;" title="Equalize &amp; feather per-scan analog color/luminance variations across adjacent pixels at the 4 camera seams">
+                <input type="checkbox" id="scan-seam-blend" checked onchange="onScanSeamBlendToggle()" />
+                <span>Blend Seam</span>
+              </label>
+              <label class="field" style="margin:0;">
+                <select id="scan-feather-mode" onchange="persistScanSettings()" title="Feather algorithm mode">
+                  <option value="classic">Linework</option>
+                  <option value="artwork">Artwork</option>
+                </select>
+              </label>
+            </div>
+
+            <!-- Collapsible Advanced Tuning (Sliders for Blend Width & Strength) -->
+            <div class="accordion-box" id="advanced-seam-box" style="margin-top:2px;">
+              <button type="button" class="accordion-header" aria-expanded="false"
+                      aria-controls="advanced-seam-body" onclick="toggleAccordion('advanced-seam-box')">
+                <span>⚙ Advanced Seam Tuning</span>
+                <span class="accordion-arrow" id="advanced-seam-arrow">▸</span>
+              </button>
+              <div class="accordion-body" id="advanced-seam-body" hidden style="display:none;">
+                <div id="scan-seam-blend-controls" style="display:flex; flex-direction:column; gap:8px;">
+                  <div class="row-2">
+                    <label class="field">
+                      <span>Blend Width: <strong id="scan-blend-width-lbl">±128 px</strong></span>
+                      <input type="range" id="scan-blend-width" min="16" max="1024" step="8" value="128" oninput="onScanBlendAdjustChange()" onchange="persistScanSettings()" />
+                    </label>
+                    <label class="field">
+                      <span>Strength: <strong id="scan-blend-str-lbl">85%</strong></span>
+                      <input type="range" id="scan-blend-strength" min="10" max="100" step="5" value="85" oninput="onScanBlendAdjustChange()" onchange="persistScanSettings()" />
+                    </label>
+                  </div>
+                </div>
+              </div>
             </div>
             <p id="drift-recommendation" class="muted-text">
               The real-time drift analyzer checks white margins across Cameras 1–5 for thermal lamp shifts.
@@ -312,24 +353,6 @@
               <input type="checkbox" id="ai-auto-enhance" onchange="onAutoAiEnhanceChange()" />
               <span><strong>Auto AI Enhance</strong> — run this chain after every scan</span>
             </label>
-
-            <!-- Seam blend -->
-            <label class="checkbox-field">
-              <input type="checkbox" id="ai-blend-seam-colors" checked onchange="toggleAiSeamBlendControls()" />
-              <span>Analog Seam Color Harmonization</span>
-            </label>
-            <div id="ai-seam-blend-controls" style="padding-left:22px; display:flex; flex-direction:column; gap:6px;">
-              <div class="row-2">
-                <label class="field">
-                  <span>Zone: <strong id="ai-blend-width-lbl">±128 px</strong></span>
-                  <input type="range" id="ai-blend-width" min="16" max="1024" step="8" value="128" oninput="onAiBlendAdjustChange()" />
-                </label>
-                <label class="field">
-                  <span>Strength: <strong id="ai-blend-str-lbl">85%</strong></span>
-                  <input type="range" id="ai-blend-strength" min="10" max="100" step="5" value="85" oninput="onAiBlendAdjustChange()" />
-                </label>
-              </div>
-            </div>
 
             <!-- Inpaint seams -->
             <label class="checkbox-field">
@@ -476,36 +499,36 @@
     <!-- Right Rail: scan action on top, output & autosave below -->
     <aside class="sidebar sidebar-right" aria-label="Scan action and output settings">
       <div class="sidebar-action-dock">
-        <!-- Scanner status (link + media) -->
-        <section class="rail-status" aria-label="Scanner status">
-          <div class="rail-label">Scanner Status</div>
+        <!-- Combined Scanner status and controls card -->
+        <section class="rail-status" aria-label="Scanner status and controls">
+          <div class="rail-label">Scanner</div>
           <span id="hw-link" class="pill pill-ok">
             <span class="pill-dot"></span>1 Gbps Link Ready
           </span>
           <span id="hw-media" class="pill pill-neutral">
             <span class="pill-dot"></span>Checking...
           </span>
-        </section>
 
-        <!-- Paper feed controls -->
-        <div class="paper-btn-group" role="group" aria-label="Paper Feed Controls">
-          <button class="btn-paper" onclick="paperAction('load')" title="Load sheet into scan position (fn=1)">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12l7 7 7-7"/></svg>
-            Load
-          </button>
-          <button class="btn-paper" onclick="paperAction('eject_front')" title="Eject sheet out front (0xFFFFFE)">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
-            Eject Front
-          </button>
-          <button class="btn-paper" onclick="paperAction('eject_back')" title="Eject sheet out rear (0xFFFFFF)">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
-            Eject Rear
-          </button>
-          <button class="btn-paper" onclick="paperAction('recover')" title="Run Unload -> Load Recovery Cycle (0x24)">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 21h5v-5"/></svg>
-            Recover
-          </button>
-        </div>
+          <!-- Paper feed controls sharing the same card border -->
+          <div class="paper-btn-group" role="group" aria-label="Paper Feed Controls">
+            <button class="btn-paper" onclick="paperAction('load')" title="Load sheet into scan position (fn=1)">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+              Load
+            </button>
+            <button class="btn-paper" onclick="paperAction('eject_back')" title="Eject sheet out rear (0xFFFFFF)">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12l7 7 7-7"/></svg>
+              Eject Rear
+            </button>
+            <button class="btn-paper" onclick="paperAction('eject_front')" title="Eject sheet out front (0xFFFFFE)">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+              Eject Front
+            </button>
+            <button class="btn-paper" onclick="paperAction('recover')" title="Run Unload -> Load Recovery Cycle (0x24)">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 21h5v-5"/></svg>
+              Recover
+            </button>
+          </div>
+        </section>
 
         <button class="btn btn-primary btn-lg btn-block" id="btn-start-scan" onclick="startScan()">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="5 3 19 12 5 21 5 3"/></svg>
@@ -523,35 +546,18 @@
           <span id="scan-activity-elapsed" class="scan-elapsed">0s</span>
         </div>
 
-        <!-- Always-visible output / autosave settings -->
-        <section class="output-dock" aria-label="Output and autosave settings">
+        <!-- Always-visible output settings -->
+        <section class="output-dock" aria-label="Output settings">
           <div class="output-dock-head">
             <span class="output-dock-title">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
-              Output &amp; Autosave
+              OUTPUT
             </span>
             <label class="auto-toggle" title="Automatically save the selected formats after each scan, drift decision, or AI render">
-              <input type="checkbox" id="autosave-enabled" checked onchange="persistOutputSettings()" />
+              <input type="checkbox" id="autosave-enabled" checked onchange="onAutosaveChange()" />
               <span class="toggle-switch" aria-hidden="true"></span>
               <span class="auto-toggle-text">Autosave</span>
             </label>
-          </div>
-
-          <div class="row-2">
-            <label class="field">
-              <span>File Prefix</span>
-              <input type="text" id="export-prefix" value="scan" spellcheck="false"
-                     oninput="updateNextFilenamePreview()" onchange="persistOutputSettings()" />
-            </label>
-            <label class="field">
-              <span>Next Auto #</span>
-              <input type="number" id="export-next-seq" value="1" min="1" step="1"
-                     oninput="updateNextFilenamePreview()" onchange="persistOutputSettings()" />
-            </label>
-          </div>
-
-          <div class="muted-text next-file-preview" id="next-file-preview">
-            Next file: <strong>scan_0001</strong>
           </div>
 
           <label class="field">
@@ -563,6 +569,44 @@
                       onclick="openBrowseModal()" title="Browse for the output directory">Browse…</button>
             </div>
           </label>
+
+          <div class="row-2">
+            <label class="field">
+              <span>File Prefix</span>
+              <input type="text" id="export-prefix" value="scan" spellcheck="false"
+                     oninput="updateNextFilenamePreview()" onchange="persistOutputSettings()" />
+            </label>
+            <label class="field">
+              <span>Next Auto #</span>
+              <div class="inline-input">
+                <input type="number" id="export-next-seq" value="1" min="1" step="1"
+                       oninput="updateNextFilenamePreview()" onchange="persistOutputSettings()" />
+                <button type="button" class="btn btn-secondary btn-sm" onclick="resetAutoNumber()"
+                        title="Reset the counter to 1 — numbers already on disk are skipped automatically">Reset</button>
+              </div>
+            </label>
+          </div>
+
+          <div class="row-3" style="margin-top:2px;">
+            <label class="checkbox-field" title="Include the File Prefix in generated filenames">
+              <input type="checkbox" id="prefix-enabled" checked onchange="onPrefixEnabledChange()" />
+              <span>Prefix</span>
+            </label>
+            <label class="checkbox-field" title="Add the scan number to the filename">
+              <input type="checkbox" id="auto-number-enabled" checked onchange="onAutoNumberChange()" />
+              <span>Auto #</span>
+            </label>
+            <label class="checkbox-field" title="Name each scan from a vision description — title-block fields when the sheet has one">
+              <input type="checkbox" id="ocr-auto" onchange="onOcrAutoChange()" />
+              <span>Auto describe</span>
+            </label>
+          </div>
+
+          <div class="muted-text is-warn" id="ocr-alert" style="display:none; font-size:11px; margin-top:2px;"></div>
+
+          <div class="muted-text next-file-preview" id="next-file-preview">
+            Next file: <strong>scan_0001</strong>
+          </div>
 
           <div class="output-formats-row">
             <span class="output-formats-label">Formats</span>
@@ -585,7 +629,7 @@
             Autosave and Save / Export will write TIFF, JPG, PDF.
           </div>
 
-          <button class="btn btn-secondary btn-block btn-sm" id="btn-export" onclick="exportCurrentScan()" disabled
+          <button class="btn btn-primary btn-lg btn-block" id="btn-export" onclick="exportCurrentScan()" disabled
                   title="Save the render shown in the viewer">
             💾 Save current view
           </button>
@@ -827,33 +871,19 @@
           </label>
         </div>
 
-        <label class="checkbox-field">
-          <input type="checkbox" id="set-seam-blend-enabled" checked />
-          <span>Enable Analog Seam Color Blending by default</span>
-        </label>
-
-        <div class="row-2">
-          <label class="field">
-            <span>Default Blend Width (px)</span>
-            <input type="number" id="set-seam-blend-width" value="128" min="8" max="1024" step="8" />
-          </label>
-          <label class="field">
-            <span>Default Blend Strength (%)</span>
-            <input type="number" id="set-seam-blend-strength" value="85" min="5" max="100" step="5" />
-          </label>
+        <div class="muted-text">
+          Analog seam blending — on/off, blend width, strength and the Linework / Artwork
+          mode — is owned by <strong>Scan Setup → Sensor Temp &amp; Color Drift</strong>
+          and saved with the scan form.
         </div>
 
         <hr class="divider" />
         <h3 style="font-size:12px; font-weight:700; color:#cbd5e1;">Output Defaults</h3>
         <div class="muted-text">
-          Output directory, file prefix, autosave, formats and the next auto number live in the
-          always-visible <strong>Output &amp; Autosave</strong> panel above Initiate Scan.
+          Output directory, file prefix, autosave, formats, auto-numbering and the next
+          number all live in the always-visible
+          <strong>Output &amp; Autosave</strong> panel above Initiate Scan.
         </div>
-
-        <label class="checkbox-field">
-          <input type="checkbox" id="set-auto-number" checked />
-          <span>Auto-number scans sequentially (scan_0001, scan_0002 — never overwrites)</span>
-        </label>
 
         <label class="checkbox-field">
           <input type="checkbox" id="set-tiff-16bit" />
@@ -864,6 +894,49 @@
           <input type="checkbox" id="set-debug-mode" />
           <span>Enable Debug Mode (save raw .rec stream, transcript &amp; 1:1 seam crops)</span>
         </label>
+
+        <div class="muted-text" id="ocr-build-line" style="font-size:11px; margin-top:6px;"></div>
+
+        <hr class="divider" />
+        <h3 style="font-size:12px; font-weight:700; color:#cbd5e1;">Auto Describe — Vision-Language LLM (VLM)</h3>
+        <p class="muted-text" style="font-size:11px; margin:0;">
+          Direct multimodal AI engine for automated cataloging, title-block parsing, and descriptive naming. Works out-of-the-box with local Ollama (<span id="vlm-status-pill" style="color:#38bdf8;">auto-detect</span>) or any OpenAI-compatible VLM endpoint.
+        </p>
+        <label class="field">
+          <span>VLM Endpoint URL</span>
+          <input type="text" id="set-vlm-endpoint" placeholder="http://localhost:11434/v1" />
+        </label>
+        <label class="field">
+          <span>VLM Model Name</span>
+          <input type="text" id="set-vlm-model" placeholder="auto (e.g. qwen2.5vl:3b, qwen3-vl:2b, llama3.2-vision)" />
+        </label>
+        <label class="field">
+          <span>API Key (Optional for local Ollama)</span>
+          <input type="password" id="set-vlm-key" placeholder="Bearer token (leave empty for local models)..." />
+        </label>
+
+        <hr class="divider" />
+        <h3 style="font-size:12px; font-weight:700; color:#cbd5e1;">Auto Describe — Vision Prompt</h3>
+        <p class="muted-text" style="font-size:11px; margin:0;">
+          Instructions sent to the vision model when <strong>Auto describe</strong> reads a
+          scan. Leave the built-in default alone, or change how it describes the sheet.
+        </p>
+        <label class="field">
+          <span>Vision description prompt</span>
+          <textarea id="set-ocr-vision-prompt" rows="8" spellcheck="false" autocomplete="off"
+                    placeholder="Default prompt unavailable — the OCR module is not reachable or does not report one."
+                    oninput="onVisionPromptInput()"></textarea>
+        </label>
+        <div class="vision-prompt-actions">
+          <span class="muted-text" id="set-ocr-vision-prompt-state" style="font-size:11px;"></span>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="resetVisionPromptToDefault()"
+                  title="Discard the customization and use the OCR module's built-in prompt">Reset to default</button>
+        </div>
+        <p class="muted-text" style="font-size:11px; margin:0;">
+          The reply must stay JSON with <code>doc_type</code>, <code>title</code>,
+          <code>description</code>, <code>visible_text</code> and <code>tags</code> —
+          naming reads those keys.
+        </p>
 
         <hr class="divider" />
         <h3 style="font-size:12px; font-weight:700; color:#cbd5e1;">External Generative AI / Photocraft MCP Integration</h3>
@@ -917,6 +990,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=1793238200"></script>
+  <script src="/static/app.js?v=1793645265"></script>
 </body>
 </html>

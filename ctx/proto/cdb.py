@@ -198,7 +198,10 @@ def set_window(param_length: int) -> bytes:
 def scan(start: bool = True) -> bytes:
     """``1b`` SCAN — ANSI SCSI-2 Scanner command set.
 
-    Command identity confirmed against the published ANSI SCSI-2 Scanner command set and live wire captures.
+    This was labelled START STOP UNIT for months. The 64-entry opcode table at
+    ``.data:0x1800ff190`` in ``CtxScan64.dll`` names ``0x1b`` **SCAN**, and
+    ``CDB[4]`` is a scan parameter the vendor only ever sets to 1
+    (``scanScan`` = ``FUN_180071fa0``, CDB ``1B 00 00 00 <p4>``).
 
     Measured on ``letter-1024-1929.pcapng``: 20,220 data records follow this
     command, while the UDP handshake alone yields only a ~191-frame pre-roll.

@@ -1,10 +1,10 @@
-# Contex HD Ultra Series — Open Scanner Studio, Driver & MCP Server
+# Contex HD Ultra i4250s — Open.NEXT v0.2.0 Studio, Driver, VLM & MCP Server
 
-Modern cross-platform scanner application, Model Context Protocol (MCP) server, and SCSI-over-TCP/UDP driver for **Contex HD Ultra series** large-format sheetfed scanners — built to replace Contex's Windows `.NET` **WIDEsystem** and **Nextimage** applications on **Linux (Ubuntu)** and **Windows** (with a clean path to standalone desktop packaging).
+Modern cross-platform scanner application, Model Context Protocol (MCP) server, and SCSI-over-TCP/UDP driver for the **Contex HD Ultra i4250s** 42-inch 5-camera large-format scanner — built to replace Contex's Windows `.NET` **WIDEsystem** and **Nextimage** applications on **Ubuntu Linux** (with a clean 2-stage path to standalone Linux/Windows desktop packaging).
 
 **License:** GNU GPL-3.0 — see [LICENSE](LICENSE).
 
-![Open.NEXT Scanner Studio](docs/images/ONEXT_AI.png)
+![Open.NEXT Scanner Studio](docs/images/ONEXT_A-B.png)
 
 ---
 
@@ -46,9 +46,10 @@ This application is an **open-source, host software-based solution** designed to
 
 ---
 
+
 ## Key Capabilities & End-to-End Scan Workflow
 
-The application implements the full 5-camera hardware and imaging pipeline established in [`DESIGN.md`](DESIGN.md) and [`SPECS.md`](SPECS.md):
+The application implements the full 5-camera hardware and imaging pipeline established in [`DESIGN.md`](DESIGN.md), [`SPECS.md`](SPECS.md), [`engineering/analysis/stitch/STITCH-REPORT.md`](engineering/analysis/stitch/STITCH-REPORT.md), and [`engineering/analysis/color/COLOR-REPORT.md`](engineering/analysis/color/COLOR-REPORT.md):
 
 ```
 Initiate Scan ──► Collect 5-Cam UDP Stream ──► Reorder Cam 1..5 & Apply Color Calibration
@@ -74,9 +75,20 @@ Review in the viewer ──► Save current view (TIFF / JPG / PDF) ──► Au
 
 1. **Hardware Arming & High-Speed Stream Collection (`ctx/engine.py`)**:
    - Gigabit Ethernet preflight check (warns if link `< 1000 Mbps`, allocates a `64 MB` UDP receive buffer).
-   - Automatic paper recovery (`Unload -> Load` when the scanner is left in `0x24 SCANNING`), plus the rail's feed controls **Load**, **Eject Front (`0xFFFFFE`)**, **Eject Rear (`0xFFFFFF`)** and **Recover** (an `Unload -> Load` cycle); `unload` is also exposed on the REST/MCP paper endpoints.
+   - **Media is never moved automatically.** `run_live_scan` defaults to `recover=False`: if the sheet is left mid-path (`0x24 SCANNING`) the call **raises and moves nothing**, and the operator recovers it by hand. `Recover` (an `Unload -> Load` cycle) and `unload` remain available as explicit REST/MCP paper actions, but are never triggered as a side effect of starting a scan.
+     - **Why:** `unload` feeds at full roller speed with no tension control. On a 30 ft sheet that speed plus slightly unbalanced rollers walks the media sideways into the side guides and tears it — this happened on 2026-11-02, damaging the sheet. Long or heavy media must be recovered by hand, watched, at a speed you choose.
+     - The rail's other feed controls are unchanged: **Load**, **Eject Front (`0xFFFFFE`)**, **Eject Rear (`0xFFFFFF`)**. The arming sequence's `OBJ POS LOAD` also rewinds media to its leading edge — which is why a mid-scan sheet must be dealt with *before* another scan is started.
    - Executes the 32-command OEM arming sequence over `TCP 58170` and collects the 16-bit 5-camera stream over `UDP 58170` with credit pumping (`type 5`), pre-roll draining, and ACK-per-received record (`type 3`).
    - **Hard Flash Safety Guard**: `WRITE BUFFER 0xA0` (RAM → Flash commit) and programming modes are blocked unconditionally (`ctx/proto/cdb.py`).
+   - **Long-document mode (`ctx/banded.py`, "Long document (banded)" in Scan Setup).** Spools the wire stream straight to disk (`run_live_scan(spool_path=…)`) and stitches it in row bands with a cross-faded overlap, so **peak RAM is one band instead of the whole sheet**. Measured: a 30 ft equivalent capture (5.9 GB on the wire) processed as 19 bands at **9.9 GB peak / 57 s**, versus 30.5 GB and an OOM kill for the single-pass path. Banded output matches the single-shot pipeline to **mean |Δ| 2.59** (JPEG-quantisation level). JPEG's 65,535-px height limit means sheets over ~27 ft at 200 dpi are written as numbered `_partN.jpg` files plus a `<base>.meta.json` manifest.
+     - Also available headless as `python -m ctx longscan --from-rec CAPTURE.rec`, which reprocesses an existing capture without the scanner.
+     - **Single-file output is the default.** `long_out_format="auto"` + `long_single_file` writes **one file**, choosing JPEG while the sheet fits under libjpeg's 65,535-row ceiling (218 in at 300 dpi, 327 in at 200 dpi) and TIFF beyond it. The UI exposes *Single file — auto / JPG parts / JPG single / TIFF single*.
+     - **Captures are bounded, not accumulated.** Newest `long_capture_keep` captures (default 1) are kept and older `.rec` files are pruned automatically; `GET /api/captures` lists them with size/rows/free space, `DELETE /api/captures/{name}` removes one, and the Scan Setup panel shows the list with delete buttons plus a warning when free space drops below 20 GB. Deliberately **no modal before a scan** — a dialog at start time either stalls the run or gets dismissed without reading.
+     - **The capture is kept.** After stitching, the working spool is reframed into a `.rec` at `<output>/captures/<scan_id>.rec` (setting `long_keep_capture`, on by default) and the spool is deleted. The `.rec` reloads via `source_mode="rec_file"` or `longscan --from-rec`, so a long sheet is fed **once**: crop, DPI, seam equalisation, band size, part size, or a later pipeline fix can all be re-run from it in minutes. Budget ~24.5 MB per inch of feed at 300 dpi (5.9 GB for 20 ft). Round-trip is byte-exact — spool → `.rec` → spool gives an identical SHA-256.
+   - **Single-pass memory guard.** Without long mode, the capture stops as soon as the stream exceeds what this host can stitch (`MemAvailable × 0.6 ÷ 9`, the measured peak-to-stream ratio) and returns an actionable error instead of being OOM-killed during stitching. On a 32 GB host that ceiling is ~1.9 GB ≈ 116 in at 200 dpi.
+   - **Channel registration is one global estimate per sheet.** `register_cameras` measures the CIS red/green-vs-blue row offset; the banded path now samples 12,000 rows once and forces that answer on every band, because per-band estimation lets sparse bands disagree and the bands then differ by rows of misregistration — visible as rainbow fringing in some bands only (measured 2026-11-02: band 1 five rows off in red while later bands were aligned).
+   - **Global seam equalisation.** Banded stitching runs with `seam_color_blend=False` (a per-band blend would give each band its own gains and band the image), which leaves the camera-to-camera tone steps at the four joins — measured +15 blue at the cam2/3 join on a 42" sheet. Banded mode now measures each join **per row block with per-row medians** (means are poisoned by content; a ±256 px mean reported 5 levels where the median says 0) and applies a symmetric ±half ramp with the value belonging to that row. Result on a 42" × 19 ft capture: cam2/3 blue 15.3 → 1.3, cam3/4 red 9.7 → 1.7, and a seam whose true step was zero is left alone instead of being "corrected" into existence.
+   - **`python -m ctx rescue`** repairs a document already stitched by that buggy build: it measures the offset in 2,000-row blocks, fills low-confidence blocks from their neighbours, shifts each block's red/green onto blue, and writes corrected JPEG parts plus a residual report (`ctx/rescue.py`). Best-effort interpolation — rescan with the fixed pipeline for full quality.
 
 2. **Camera-First Reordering & Multi-Preset Calibration (`ctx/calibration.py`)**:
    - Detects the five 23-px zero bands (`490 + 2728*k`) and masked ramps in the `13,640 px` (`81,840 B/row`) circular readout (`[cam5R][gap][cam1][gap][cam2][gap][cam3][gap][cam4][gap][cam5L]`) and reassembles `cam1..cam5` in physical bed order *before* flat-fielding or stitching.
@@ -105,14 +117,82 @@ Review in the viewer ──► Save current view (TIFF / JPG / PDF) ──► Au
      - **External Photocraft / MCP Webhook**: Connects to external generative AI restoration endpoints.
    - **Autosave & Multi-Format Export**: Exports in **Color** or **Grayscale** to **TIFF** (8-bit LZW or 16-bit), **JPG**, and **PDF** (with exact `300 DPI` physical dimensions). JPEG compression is selected from presets in **Settings**; the current JPEG quality applies to both autosave and manual export.
    - **Save the view you are looking at**: the button reads *Save “Default Preset” / “Auto-Adjusted” / “AI Enhanced” view* and writes exactly that render. On A/B Split, Raw Sensor or 1:1 Seam Inspector it is disabled — those are inspection views, not single images.
-   - **One number per scan, one file per variant**: `CU-Kee_0087.tiff` (Default Preset), `CU-Kee_0087_Auto.tiff`, `CU-Kee_0087_AI.tiff`. The number is reserved for all three variants when the scan is created; saving the same view twice moves the whole group to the next number, so nothing is overwritten.
+   - **One number per scan, one file per variant**: `CU4KS_2610311530_0042.tiff` (Default Preset), `…_0042_Auto.tiff`, `…_0042_AI.tiff`. The number is reserved for all three variants when the scan is created; saving the same view twice moves the whole group to the next number, so nothing is overwritten. Once **Auto describe** has run, the same files carry the description instead of stopping at the number.
    - **Autosave is the bulk/failsafe path**: it writes the job's **standard calibrated render** (stored preset, or the accepted auto-adjusted one) and never an AI render on its own, because post-processing can always be redone later. The exception is **Auto AI Enhance**, which also writes `<number>_AI`. Each render is written once, so a later AI run cannot duplicate the standard file.
    - **Auto AI Enhance**: a toggle at the top of the **AI & Enhance** tab that runs that tab's current chain automatically as soon as a scan is ready (persisted as the `auto_ai_enhance` setting).
-   - **Right-rail action column**: scanner status (link + media), feed controls (**Load / Eject Front / Eject Rear / Recover**), **Initiate Scan**, the **Output & Autosave** panel (autosave, file prefix, next auto number, formats, output directory with **Browse…**, save button) and the **Calibration Sheet Wizard**.
+   - **Right-rail action column**: scanner status (link + media), feed controls (**Load / Eject Front / Eject Rear / Recover**), **Initiate Scan**, the **Output & Autosave** panel (autosave, **Prefix** / **Auto #** / **Auto describe** switches, next auto number with **Reset**, formats, output directory with **Browse…**, save button) and the **Calibration Sheet Wizard**.
    - **Debug Mode Toggle**: When enabled in Settings, automatically saves `<scan_id>.rec`, `<scan_id>.jsonl`, 1:1 seam crops, and `<scan_id>-diagnostics.json` in `scans_output/debug/`.
 
-![Open.NEXT comparison to Contex's NEXTimage](docs/images/OpenNEXT-vs-NEXTimage.jpg)
 ---
+
+## Naming, OCR & Vision-Language LLM (Auto Describe)
+
+A scan is cataloged and named through visual understanding. Open.NEXT v0.2.0 features a **built-in Vision-Language LLM (VLM) engine** ([`ctx/vlm.py`](ctx/vlm.py)) that integrates directly with local **Ollama** instances (`qwen2.5vl:3b`, `qwen3-vl:2b/8b`, `glm-ocr`, `llama3.2-vision`) or any OpenAI-compatible multimodal API, alongside the optional external `ocr-md` bridge.
+
+- **Direct Multimodal AI Cataloging**:
+  - Automatically downscales large-format scans to 2048 px (preserving full title block and visual legibility).
+  - In **2–4 seconds**, the VLM extracts:
+    - `doc_type`: e.g. `Architectural-Drawing`, `Blueprint`, `Floor-Plan`, `Sectional-Map`, `Fine-Art`, `Photograph`.
+    - `title`: Extracted formal sheet title or project name.
+    - `description`: Clean professional 1–2 sentence summary of content, layout, and style.
+    - `visible_text`: Text extracted from title blocks, revision blocks, legends, and stamps.
+    - `slug`: Hyphenated, date-free filename segment (e.g. `Ground-Floor-Plan`, `Manhattan-Zoning-Map`).
+    - `tags`: Search tags/keywords.
+  - Automatically renames all exported files (TIFF, JPG, PDF) to `<Prefix>_<YYMMDDHHMM>_<NNNN>_<DocType>_<Slug>.<ext>` and writes a `.meta.json` sidecar without requiring external OCR daemons.
+
+
+A scan is named first; OCR is a means to that end. The engine is the **same
+module `ocr-pdf-watcher` runs** (`ocr-md`, a local MCP server), so an app scan
+and a folder-daemon scan get the same treatment.
+
+- **One automatic path — no document-type selector.** Every scan is described
+  from the pipeline's own preview (≤2400 px, which is the resolution the vision
+  model receives anyway). The module looks for a title block and names from its
+  fields when it finds one; when there is none — hand-drawn vellum, artwork,
+  photographs — it falls back to a visual description. A sketch with no title
+  block is rejected by the block detector and still named, locally, in ~7 s.
+- **No full-page Tesseract pass on large format.** A 42″ sheet at 300 dpi is
+  roughly 340 MB of pixels and reading it end to end only bought a text layer
+  nobody searches here. Small-format documents are `ocr-pdf-watcher`'s job.
+- **Filenames are** `<Prefix>_<YYMMDDHHMM>_<NNNN>_<Slug>.<ext>`:
+
+  ```
+  CU4KS_2610311530_0042_Map_City-of-New-York_Sectional-Map-Borough-of-Manhattan.jpg
+  ```
+
+  The timestamp is always present, so a scan stays identifiable even when
+  naming is off or fails; **Prefix**, **Auto #** and **Auto describe** on the
+  Output card decide the other three parts. `_AI` marks the AI-enhanced render,
+  and `_Auto` appears only when two renders of one scan would otherwise collide.
+- **Local first, cloud only as a fallback.** A local pass that takes longer than
+  25 s, or returns a name not worth keeping (generic stem, no description),
+  escalates once to a cloud vision provider — but only when `ocr_cloud_env` is
+  configured. Unconfigured, it reports the failure rather than inventing a name.
+- **The description prompt is yours to tune.** *Settings → Auto Describe —
+  Vision Prompt* shows the prompt the vision model is given (the shared module's
+  default) and lets you replace it — e.g. "describe only the room layout" for a
+  set of floor plans. Empty keeps the module default, so module improvements
+  still apply; the reply must stay JSON with `doc_type` / `title` /
+  `description` / `visible_text` / `tags`, because naming reads those keys.
+  `POST /api/scans/{id}/ocr` and the MCP tools take a one-off `prompt` override.
+- **Zero-click or on demand.** *Auto describe* names each scan after autosave;
+  `POST /api/scans/{id}/ocr` does it for a scan still in memory; the MCP tools
+  `scan_ocr`, `scan_describe`, `scan_suggest_filename` and `ocr_status` are
+  available to agents.
+
+```bash
+# what is installed / which model is ready
+curl -s localhost:8080/api/ocr/status | jq
+
+# describe + name a saved scan (renamed in place, duplicate rasters removed)
+curl -s -X POST localhost:8080/api/scans/CU4KS_2610311530_0042/ocr \
+  -H 'Content-Type: application/json' -d '{}' | jq
+```
+
+The module is discovered from a sibling `ocr-pdf-watcher` checkout, an
+installed `ocr-md`, or `OPENNEXT_OCR_COMMAND`. See
+[`docs/OCR-VISION-NAMING.md`](docs/OCR-VISION-NAMING.md) for the adoption
+notes, command resolution order, naming rules and limits.
 
 ## Quick Start (Ubuntu / Linux / Windows)
 
@@ -175,10 +255,36 @@ View tabs, in order: **Default Preset**, **Auto-Adjusted**, **AI Enhanced**, **A
 #### Bulk scanning (e.g. 30 sheets unattended)
 
 1. **Scan Setup → Colour / Temp Drift Check → Off — bulk, fastest** — skips the drift analysis and the second stitch (~29 s saved per 42" sheet).
-2. **Output & Autosave** — turn **Autosave** on, set **File Prefix** and **Next Auto #**, choose formats and the output directory; set **Post-scan paper handling** in Settings if the feeder should eject each sheet.
-3. Click **Initiate Scan** once per sheet (or press the panel **Scan** key with panel keys enabled). Every sheet lands as `<prefix>_NNNN.<ext>` with no dialog stopping the run.
+2. **Output & Autosave** — turn **Autosave** on, set **File Prefix** and **Next Auto #** (with **Reset**), decide whether **Auto describe** should name each sheet, choose formats and the output directory; set **Post-scan paper handling** in Settings if the feeder should eject each sheet.
+3. Click **Initiate Scan** once per sheet (or press the panel **Scan** key with panel keys enabled). Every sheet lands as `<prefix>_<YYMMDDHHMM>_<NNNN>.<ext>` — plus a description when **Auto describe** is on — with no dialog stopping the run.
 
 Memory stays flat by design: only the **two newest scans** keep their raster and stitched buffers (so re-export and sheet calibration still work); older jobs release those buffers and keep metadata, previews and exported files. Re-exporting an older scan returns a clear `buffers were released` error.
+
+#### Desktop launcher (Ubuntu one-click)
+
+On a workstation that always runs this checkout, `packaging/` turns the studio into a clickable app — no sudo, no installer:
+
+```bash
+./packaging/install.sh               # menu entry + icon + ~/Desktop shortcut
+./packaging/install.sh --autostart   # …and start with the session
+./packaging/install.sh --uninstall
+```
+
+Clicking **Contex Studio** (application menu or desktop icon) starts the server if it is not running and opens the UI; clicking it again reuses the running server instead of starting a second one, so two operators on the same account can share it.
+
+| Command | Effect |
+|---|---|
+| `contex-studio` | start if needed, then open the UI |
+| `contex-studio --status` | `running on http://…:8080 (pid N)` or `stopped` |
+| `contex-studio --stop` | stop the server (only processes from this checkout's venv are signalled) |
+| `contex-studio --foreground` | run in the current terminal, Ctrl-C stops it |
+| `contex-studio --no-open` | start without opening a browser |
+
+- Logs: `~/.local/state/contex-studio/app-<date>.log`; PID: `server.pid` in the same directory.
+- `CONTEX_STUDIO_DIR`, `CONTEX_PORT` (default `8080`, next free port if busy) and `CONTEX_SCANNER_IP` override the defaults.
+- The installed command is a symlink to `packaging/contex-studio`, so `git pull` updates it too.
+- GNOME may ask once for right-click → **Allow Launching** on the desktop icon (the installer already marks it trusted, and the menu entry needs nothing).
+- This launcher uses the checkout's `.venv`, so it depends on the system `python3` that built it. A self-contained build (bundled interpreter, works on a clean machine) is the AppImage/PyInstaller step described in [`docs/IMPLEMENTATION-PLAN.md`](docs/IMPLEMENTATION-PLAN.md).
 
 ### 3. Launch the MCP Server (for AI Agents, DSH & Photocraft)
 
@@ -254,6 +360,14 @@ if job.drift_report["verdict"] in ("WARN", "DRIFT"):
     job = ws.resolve_drift_decision(job.scan_id, choice="auto_adjust", promote_to_preset=True)
 ```
 
+### 4. Run the Test Suite
+
+```bash
+python3 -m unittest discover -s . -p "test_*.py" -t . -v
+```
+
+The suite covers the protocol/CDB guards, calibration math, the official-sheet wizard, the REST workflow (including render-variant export, autosave scope, drift-off scanning and buffer retention) and the served Web UI markup.
+
 ---
 
 ## Low-Level CLI Reference (`python -m ctx`)
@@ -261,12 +375,16 @@ if job.drift_report["verdict"] in ("WARN", "DRIFT"):
 In addition to `ctx app` and `ctx mcp`, the command-line tool provides direct protocol utilities:
 
 ```bash
-python3 -m ctx discover                     # UDP 58169 broadcast discovery
-python3 -m ctx info --ip 0.0.0.0        # Read-only INQUIRY + VPD capability pages
-python3 -m ctx plan --dpi 300 --width-in 42 # Print the command sequence without I/O
-python3 -m ctx scan --out scan-name         # Run a low-level scan to .bin + .jsonl
-python3 -m ctx param --buffer 0xbf          # READ BUFFER parameter block dump
-python3 -m ctx pcap capture.pcapng          # Offline capture reassembly
+python3 -m ctx app --bind 127.0.0.1 --http-port 8080 # Launch Studio WebUI & REST server
+python3 -m ctx mcp                                   # Launch Model Context Protocol (MCP) server
+python3 -m ctx longscan --from-rec CAPTURE.rec       # Memory-bounded banded stitcher (<3 GB peak RAM)
+python3 -m ctx rescue STITCHED.jpg                   # Channel-registration repair for misaligned captures
+python3 -m ctx discover                              # UDP 58169 broadcast discovery
+python3 -m ctx info --ip 0.0.0.0                     # Read-only INQUIRY + VPD capability pages (placeholder IP)
+python3 -m ctx plan --dpi 300 --width-in 42          # Print the command sequence without I/O
+python3 -m ctx scan --out scan-name                  # Run a low-level scan to .bin + .jsonl
+python3 -m ctx param --buffer 0xbf                   # READ BUFFER parameter block dump
+python3 -m ctx pcap capture.pcapng                   # Offline capture reassembly
 ```
 
 ---
@@ -312,10 +430,25 @@ The scanner is a **raw sensor, not an imaging device** — it delivers raw 16-bi
 
 | File / Directory | Description |
 |---|---|
+| [`CHANGELOG.md`](CHANGELOG.md) | **Version Changelog** — Complete record of features, improvements and fixes between v0.1.0 and v0.2.0 |
+| [`docs/OCR-VISION-NAMING.md`](docs/OCR-VISION-NAMING.md) | **OCR, Vision & Descriptive Filenames** — shared `ocr-md` MCP module, adoption notes, API/tools and naming rules |
+| [`docs/IMPLEMENTATION-PLAN.md`](docs/IMPLEMENTATION-PLAN.md) | **App Architecture & Implementation Plan** — 2-stage Ubuntu/Windows strategy, workflow diagram, module design |
 | [`DESIGN.md`](DESIGN.md) | **Driver Architecture** — 8-stage pipeline, per-column LUTs, calibration profile schema, flash safety rule |
 | [`SPECS.md`](SPECS.md) | **Implementation Specification** — byte layouts, field tables, algorithms, constants, conformance checklist |
+| [`engineering/analysis/stitch/STITCH-REPORT.md`](engineering/analysis/stitch/STITCH-REPORT.md) | **5-Camera Stitching & IT8 Report** — circular readout proof, camera reordering, `R170829` IT8 fit |
+| [`engineering/analysis/color/COLOR-REPORT.md`](engineering/analysis/color/COLOR-REPORT.md) | **Flat-Field & Drift Report** — per-column calibration math and thermal drift detection |
 | [`ctx/`](ctx/) | **Core Python Package & Application** (`engine.py`, `calibration.py`, `pipeline.py`, `ai.py`, `server.py`, `mcp_server.py`, `web/`) |
-| [`LICENSE`](LICENSE) | **GNU General Public License v3.0 (GPL-3.0)** — Free copyleft open-source terms, warranty disclaimer & limitation of liability |
+| [`packaging/`](packaging/) | **Ubuntu one-click launcher** — `contex-studio` script, `.desktop` entry, scalable icon, `install.sh` (per-user, no sudo) |
+| [`tests/`](tests/) | Unit and end-to-end workflow test suite (254 tests) |
+| [`engineering/analysis/`](engineering/analysis/) | Key reverse-engineering reports (colour + stitch evidence, kept as the record of how the driver was derived) |
+
+---
+
+## License & Trademark Notice
+
+This project is released under the [GNU GPL-3.0](LICENSE) — fork it, remix it, ship it. Modifications and forks stay open under the same license.
+
+**Trademark Notice:** Open.NEXT is an independent open-source project, not affiliated with, sponsored, or endorsed by Contex A/S. Contex, NextImage, and WIDEsystem are trademarks of Contex A/S, used for identification and compatibility reference only.
 
 ---
 

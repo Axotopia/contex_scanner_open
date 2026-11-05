@@ -1,0 +1,206 @@
+#!/usr/bin/env bash
+# Contex Studio launcher — one click (or one command) starts the studio and
+# opens the UI in the browser.
+#
+#   contex-studio              start if needed, then open the UI
+#   contex-studio --no-open     start if needed, print the URL, do not open a browser
+#   contex-studio --status      report whether the server is running
+#   contex-studio --stop        stop the running server
+#   contex-studio --foreground  run in this terminal (Ctrl-C stops it)
+#   contex-studio --port 8090   use a specific port
+#
+# Configuration (environment):
+#   CONTEX_STUDIO_DIR   app checkout (default: two levels above this script)
+#   CONTEX_SCANNER_IP   scanner address (default: 0.0.0.0)
+#   CONTEX_PORT         preferred HTTP port (default: 8080)
+set -uo pipefail
+
+SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+APP_DIR="${CONTEX_STUDIO_DIR:-$(cd "$(dirname "$SELF")/.." && pwd)}"
+HOST=127.0.0.1
+SCANNER_IP="${CONTEX_SCANNER_IP:-0.0.0.0}"
+PORT="${CONTEX_PORT:-8080}"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/contex-studio"
+LOG="$STATE_DIR/app-$(date +%F).log"
+PIDFILE="$STATE_DIR/server.pid"
+PY="$APP_DIR/.venv/bin/python"
+OPEN=1
+MODE=start
+TIMEOUT_S=30
+
+usage() { sed -n '2,16p' "$SELF" | sed 's/^# \{0,1\}//'; }
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --no-open)    OPEN=0 ;;
+        --stop)       MODE=stop ;;
+        --status)     MODE=status ;;
+        --foreground) MODE=foreground ;;
+        --port)       PORT="${2:?--port needs a value}"; shift ;;
+        -h|--help)    usage; exit 0 ;;
+        *) echo "contex-studio: unknown option '$1' (try --help)" >&2; exit 2 ;;
+    esac
+    shift
+done
+
+mkdir -p "$STATE_DIR"
+
+url_for() { printf 'http://%s:%s' "$HOST" "$1"; }
+
+# Our own API answers /api/status with hardware+settings; anything else on the
+# port is somebody else's server and must not be reused or killed.
+is_ours() {
+    local body
+    body="$(curl -fsS --max-time 2 "$(url_for "$1")/api/status" 2>/dev/null)" || return 1
+    case "$body" in *'"hardware"'*) ;; *) return 1 ;; esac
+    case "$body" in *'"settings"'*) return 0 ;; *) return 1 ;; esac
+}
+
+# PIDs of studio servers that belong to THIS checkout.  The interpreter must BE
+# our venv python (absolute, or relative to that process's cwd) and the
+# invocation must include `-m ctx app`.  Nothing else is ever signalled: a shell
+# whose command line merely mentions "ctx app" does not match.
+server_pids() {
+    local pid cmd argv0 candidate cdir canonical want
+    want="$(readlink -f "$APP_DIR")/.venv/bin/python"
+    for pid in $(pgrep -f -- " -m ctx app " 2>/dev/null || true); do
+        [ "$pid" = "$$" ] && continue
+        cmd="$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)"
+        case "$cmd" in *" -m ctx app "*) ;; *) continue ;; esac
+        argv0="${cmd%% *}"
+        case "$argv0" in
+            /*) candidate="$argv0" ;;
+            *)  candidate="$(readlink -f "/proc/$pid/cwd" 2>/dev/null)/$argv0" ;;
+        esac
+        cdir="$(readlink -f "$(dirname "$candidate")" 2>/dev/null || true)"
+        [ -n "$cdir" ] || continue
+        canonical="$cdir/$(basename "$candidate")"
+        [ "$canonical" = "$want" ] && printf '%s\n' "$pid"
+    done
+}
+
+port_open() {
+    (exec 3<>"/dev/tcp/$HOST/$1") 2>/dev/null && { exec 3<&- 3>&-; return 0; }
+    return 1
+}
+
+running_port() {
+    if is_ours "$PORT"; then printf '%s' "$PORT"; return 0; fi
+    local p
+    for p in $(seq 8081 8099); do
+        is_ours "$p" && { printf '%s' "$p"; return 0; }
+    done
+    return 1
+}
+
+pick_free_port() {
+    local p
+    for p in "$PORT" $(seq 8081 8099); do
+        port_open "$p" || { printf '%s' "$p"; return 0; }
+    done
+    return 1
+}
+
+open_ui() {
+    local url="$1"
+    command -v xdg-open >/dev/null 2>&1 && { xdg-open "$url" >/dev/null 2>&1 & return 0; }
+    [ -n "${BROWSER:-}" ] && { "$BROWSER" "$url" >/dev/null 2>&1 & return 0; }
+    return 1
+}
+
+fail() {
+    local msg="$1"
+    echo "contex-studio: $msg" >&2
+    command -v zenity >/dev/null 2>&1 && zenity --error --title="Contex Studio" --text="$msg" 2>/dev/null
+    exit 1
+}
+
+do_status() {
+    local p pid
+    if p="$(running_port)"; then
+        pid="$(cat "$PIDFILE" 2>/dev/null || true)"
+        if [ -z "${pid:-}" ]; then
+            pid="$(server_pids)"
+            pid="${pid%%$'\n'*}"
+        fi
+        echo "running on $(url_for "$p") (pid ${pid:-unknown})"
+        exit 0
+    fi
+    echo "stopped"
+    exit 3
+}
+
+do_stop() {
+    local stopped=0 pid
+    if [ -f "$PIDFILE" ]; then
+        pid="$(cat "$PIDFILE" 2>/dev/null || true)"
+        if [ -n "${pid:-}" ] && kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null && stopped=1
+            for _ in $(seq 1 20); do kill -0 "$pid" 2>/dev/null || break; sleep 0.25; done
+            kill -9 "$pid" 2>/dev/null || true
+        fi
+        rm -f "$PIDFILE"
+    fi
+    # Fallback: a server started by hand from this same virtualenv.
+    for pid in $(server_pids); do
+        kill "$pid" 2>/dev/null && stopped=1
+    done
+    [ "$stopped" = 1 ] && echo "Contex Studio stopped." || echo "Contex Studio was not running."
+    exit 0
+}
+
+[ -x "$PY" ] || fail "Python environment not found at $PY
+Recreate it with: python3 -m venv \"$APP_DIR/.venv\" && \"$APP_DIR/.venv/bin/pip\" install -r \"$APP_DIR/requirements.txt\""
+
+case "$MODE" in
+    status) do_status ;;
+    stop)   do_stop ;;
+esac
+
+# --- already running? just show it ----------------------------------------
+if existing="$(running_port)"; then
+    url="$(url_for "$existing")"
+    echo "Contex Studio already running on $url"
+    [ "$OPEN" = 1 ] && open_ui "$url"
+    exit 0
+fi
+
+RUN_PORT="$(pick_free_port)" || fail "No free port in 8080-8099 for the studio server."
+URL="$(url_for "$RUN_PORT")"
+
+if [ "$MODE" = foreground ]; then
+    echo "Contex Studio on $URL  (Ctrl-C stops it)"
+    ( sleep 1; [ "$OPEN" = 1 ] && open_ui "$URL" ) &
+    cd "$APP_DIR" || exit 1
+    exec "$PY" -m ctx app --bind "$HOST" --http-port "$RUN_PORT" --ip "$SCANNER_IP"
+fi
+
+cd "$APP_DIR" || fail "Cannot enter $APP_DIR"
+{
+    echo
+    echo "=== $(date '+%F %T') starting on $URL (scanner $SCANNER_IP) ==="
+    echo "=== app dir: $APP_DIR"
+} >>"$LOG"
+
+nohup "$PY" -m ctx app --bind "$HOST" --http-port "$RUN_PORT" --ip "$SCANNER_IP" \
+    >>"$LOG" 2>&1 &
+SERVER_PID=$!
+echo "$SERVER_PID" >"$PIDFILE"
+disown "$SERVER_PID" 2>/dev/null || true
+
+for _ in $(seq 1 $((TIMEOUT_S * 2))); do
+    is_ours "$RUN_PORT" && break
+    if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+        tail -n 20 "$LOG" >&2
+        fail "The studio server exited during startup. Log: $LOG"
+    fi
+    sleep 0.5
+done
+if ! is_ours "$RUN_PORT"; then
+    tail -n 20 "$LOG" >&2
+    fail "The studio did not answer within ${TIMEOUT_S}s. Log: $LOG"
+fi
+
+echo "Contex Studio running on $URL (pid $SERVER_PID, log $LOG)"
+[ "$OPEN" = 1 ] && { open_ui "$URL" || echo "Open $URL manually."; }
+exit 0

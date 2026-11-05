@@ -292,6 +292,136 @@ def cmd_mcp(args) -> int:
     return 0
 
 
+def _print_stitch_progress(m: dict, dpi: int) -> None:
+    """Print band or seam progress; the two stages report different keys."""
+    if "band" in m:
+        total = m["rows_total"] / float(dpi)
+        print(f"  band {m['band']:3d}  {m['inches_done']:8.1f} / {total:.1f} in  ({m['elapsed_s']}s)")
+    elif "join_x" in m:
+        print(f"  seam x={m['join_x']:5d}: rgb offset {m.get('delta_rgb')} "
+              f"(ramp ±{m.get('window_px')} px)")
+
+
+def cmd_longscan(args) -> int:
+    """Capture a long sheet without holding it in RAM, then stitch it in bands.
+
+    Peak memory is one band, not the whole sheet: the wire stream goes straight
+    to a spool file and ``ctx.banded`` processes it in row bands.
+    """
+    from pathlib import Path
+
+    from .banded import load_preset, process_spool_banded, rec_to_spool, spool_to_rec
+    from .engine import ScannerEngine
+
+    preset = load_preset(args.preset)
+    out_dir = Path(args.out).expanduser()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    base = f"{args.prefix}_{time.strftime('%y%m%d%H%M')}"
+    spool = Path(args.spool).expanduser() if args.spool else out_dir / f"{base}.spool"
+
+    if args.from_rec:
+        print(f"converting {args.from_rec} -> {spool}")
+        info = rec_to_spool(args.from_rec, spool)
+        print(f"  {info['records']} records, {info['rows']} rows "
+              f"({info['rows'] / float(args.dpi):.1f} in @ {args.dpi} dpi)")
+    else:
+        engine = ScannerEngine(host=args.ip, port=args.port)
+        status = engine.probe_status(timeout=2.0)
+        if not status.get("connected"):
+            print(f"error: scanner unreachable at {args.ip}: {status.get('error')}",
+                  file=sys.stderr)
+            return 1
+        length = float(args.length_in) if args.length_in and args.length_in > 0 else None
+        where = "auto length (to end of media)" if length is None else f"{length:.1f} in"
+        if args.recover:
+            print("WARNING: --recover is on. If the media is mid-path the app will run "
+                  "Unload -> Load at full roller speed; long sheets can skew and tear.\n"
+                  "         Prefer recovering the sheet by hand and re-running without it.")
+        if not status.get("ready"):
+            print(f"error: media is not at the load position ({status.get('media_state')}). "
+                  "Recover the sheet BY HAND, then start again. Nothing was moved.",
+                  file=sys.stderr)
+            return 1
+        print(f"scanning {args.width_in:g} in wide @ {args.dpi} dpi, {where}")
+        print(f"  spooling to {spool}")
+
+        def _progress(stage: str, info: dict) -> None:
+            if stage == "streaming":
+                n = int(info.get("records", 0) or 0)
+                if n and n % 100_000 < 4_000:
+                    print(f"  streaming: {n:,} records ({info.get('elapsed_s')}s, "
+                          f"{n * 2960 / 1e9:.2f} GB)")
+            elif stage == "recovering_media":
+                print("  recovering media (Unload -> Load)")
+
+        cap = engine.run_live_scan(
+            width_inches=args.width_in,
+            dpi=args.dpi,
+            length_inches=length,
+            seconds=args.seconds,
+            recover=bool(args.recover),
+            post_scan_eject="hold",
+            spool_path=str(spool),
+            on_progress=_progress,
+        )
+        print(f"  captured {cap.rows:,} rows ({cap.rows / float(args.dpi):.1f} in), "
+              f"{cap.records_count:,} records, holes={cap.holes}, {cap.duration_seconds}s")
+        if cap.rows < 8:
+            print("error: no usable rows captured", file=sys.stderr)
+            return 1
+
+    print(f"stitching in bands of {args.band_rows} rows "
+          f"(cross-fade {args.overlap}) ...")
+    manifest = process_spool_banded(
+        spool,
+        out_dir,
+        preset=preset,
+        width_inches=args.width_in,
+        dpi=args.dpi,
+        band_rows=args.band_rows,
+        overlap_rows=args.overlap,
+        jpg_quality=args.jpg_quality,
+        part_rows=args.part_rows,
+        out_format=args.out_format,
+        single_file=args.single_file,
+        seam_equalize=args.seam_equalize,
+        seam_window_px=args.seam_window_px,
+        base_name=base,
+        progress=lambda m: _print_stitch_progress(m, args.dpi),
+    )
+    print(f"\n{manifest['rows']:,} rows = {manifest['inches']:.1f} in @ "
+          f"{manifest['dpi']} dpi, {manifest['document_width_px']:,} px wide, "
+          f"{manifest['bands']} bands, preset {manifest['preset_id']}")
+    for part in manifest["parts"]:
+        print(f"  part {part['part']}: {part['path']}")
+        print(f"           {part['inches_start']:.1f}-{part['inches_end']:.1f} in, "
+              f"{part['px'][0]}x{part['px'][1]} px, {part['size_bytes'] / 1e6:.1f} MB")
+    print(f"  manifest: {manifest['metadata_path']}")
+    if not args.from_rec:
+        # Keep the capture: a .rec can be reloaded by the app or reprocessed with
+        # `longscan --from-rec`, so a 20 ft sheet never has to be fed twice.
+        if args.keep_capture:
+            rec_path = out_dir / "captures" / f"{base}.rec"
+            print(f"writing capture {rec_path} ...", flush=True)
+            cap = spool_to_rec(
+                spool, rec_path,
+                progress=lambda m: print(
+                    f"  capture {m['bytes_done'] / 1e9:.2f} / {m['bytes_total'] / 1e9:.2f} GB",
+                    flush=True),
+            )
+            print(f"  capture: {cap['rec_path']}  {cap['rec_bytes'] / 1e9:.2f} GB, "
+                  f"{cap['records']:,} records, {cap['rows']:,} rows")
+    # The working spool is temporary whether it came from the scanner or was
+    # rebuilt from a .rec; leaving it behind costs ~5.6 GB per reprocess.
+    if not args.keep_spool:
+        try:
+            spool.unlink()
+            print("  removed working spool")
+        except OSError:
+            pass
+    return 0
+
+
 # ---------------------------------------------------------------------- parser
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -373,6 +503,51 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--bind", default="127.0.0.1", help="HTTP bind address")
     a.add_argument("--http-port", type=int, default=8080, help="HTTP server port")
     a.set_defaults(func=cmd_app)
+
+    ls = sub.add_parser(
+        "longscan",
+        help="memory-bounded capture of a long sheet (spool to disk, stitch in bands)",
+    )
+    add_device_options(ls)
+    ls.add_argument("--dpi", type=int, default=200)
+    ls.add_argument("--width-in", type=float, default=42.0)
+    ls.add_argument("--length-in", type=float, default=0.0,
+                    help="inches to capture; 0 = auto to end of media")
+    ls.add_argument("--seconds", type=float, default=1800.0,
+                    help="host read window; the stream ends early on end of media")
+    ls.add_argument("--band-rows", type=int, default=4000,
+                    help="rows per band (4000 = 20 in at 200 dpi)")
+    ls.add_argument("--overlap", type=int, default=200,
+                    help="rows cross-faded at each band join")
+    ls.add_argument("--out", default="~/Pictures", help="output directory")
+    ls.add_argument("--prefix", default="longscan", help="output file prefix")
+    ls.add_argument("--preset", default=None, help="preset id (default: the app's active one)")
+    ls.add_argument("--jpg-quality", type=int, default=95)
+    ls.add_argument("--no-seam-equalize", dest="seam_equalize", action="store_false",
+                    help="skip the global camera-seam tone equalisation")
+    ls.add_argument("--seam-window-px", type=int, default=256,
+                    help="half-width of the seam correction ramp, in document pixels")
+    ls.add_argument("--format", dest="out_format", default="jpg", choices=["jpg", "tiff"],
+                    help="jpg (split above part-rows) or tiff (always one file)")
+    ls.add_argument("--single-file", action="store_true",
+                    help="one output file; errors if a JPEG would exceed the 65,535-row limit")
+    ls.add_argument("--part-rows", type=int, default=60000,
+                    help="max rows per JPEG part (JPEG limit is 65,535; lower it for "
+                         "wide sheets, where the encode buffer is rows x width x 3)")
+    ls.add_argument("--from-rec", default=None,
+                    help="process an existing .rec capture instead of scanning")
+    ls.add_argument("--recover", action="store_true",
+                    help="DANGEROUS: let the app run Unload -> Load if media is mid-path; "
+                         "it feeds at full roller speed and can tear long sheets. "
+                         "Default is to stop and ask you to recover by hand.")
+    ls.add_argument("--spool", default=None,
+                    help="spool file path (default: alongside the output)")
+    ls.add_argument("--no-capture", dest="keep_capture", action="store_false",
+                    help="do NOT keep a .rec capture (default is to keep one, so the "
+                         "sheet never has to be fed twice)")
+    ls.add_argument("--keep-spool", action="store_true",
+                    help="also keep the raw working spool (rarely needed)")
+    ls.set_defaults(func=cmd_longscan)
 
     mcp_p = sub.add_parser("mcp", help="launch the Model Context Protocol (MCP) server")
     mcp_p.add_argument("--transport", default="stdio", choices=["stdio", "sse"],

@@ -239,6 +239,90 @@ def scanner_export(
     )
 
 
+@mcp.tool()
+def ocr_status() -> dict[str, Any]:
+    """Report whether the shared OCR module is reachable, its tools and vision model.
+
+    OCR is provided by the ``ocr-md`` MCP server (the same process
+    ocr-pdf-watcher ships); Open.NEXT talks to it over stdio. No scan is sent.
+    """
+    return get_workspace().ocr_status()
+
+
+@mcp.tool()
+def scan_ocr(
+    scan_id: str,
+    naming: str = "heuristic",
+    apply: str = "copy",
+    vision: str = "auto",
+    force: bool = False,
+    image_only: bool = False,
+    architectural: bool = False,
+    timestamp_prefix: bool = True,
+    prompt: str | None = None,
+) -> dict[str, Any]:
+    """OCR a scan's exported PDF, then describe it and suggest a filename.
+
+    ``naming``: ``heuristic`` (offline), ``llm`` (text model fills gaps) or ``off``.
+    ``apply``: ``none`` (sidecar only), ``copy`` (keep the numbered file and add a
+    descriptive copy) or ``rename``. ``vision``: ``auto`` re-reads image-only
+    pages with a local VLM, ``always`` or ``never``. ``image_only`` skips the
+    Tesseract pass entirely for known artwork/photos/drawings (vision,
+    description and naming still run). ``architectural`` finds the sheet title
+    block and names from project / sheet number / sheet title. ``prompt``
+    overrides the Settings vision-description prompt for this one pass; omit it
+    to keep the saved setting. Returns the naming block (date, type, entity,
+    subject, confidence) plus the artifact paths.
+    """
+    ws = get_workspace()
+    try:
+        return ws.ocr_scan(
+            scan_id,
+            force=force,
+            naming=naming,
+            apply=apply,
+            vision=vision,
+            image_only=image_only,
+            architectural=architectural,
+            timestamp_prefix=timestamp_prefix,
+            prompt=prompt,
+        )
+    except Exception as exc:  # noqa: BLE001 - tools return errors, they don't raise
+        return {"ok": False, "scan_id": scan_id, "error": str(exc)}
+
+
+@mcp.tool()
+def scan_describe(path: str, prompt: str | None = None) -> dict[str, Any]:
+    """Describe a scanned PDF/image with the local vision model.
+
+    Returns ``doc_type``, ``title``, a 2-3 sentence ``description``, key
+    ``visible_text`` and ``tags``. Use it for image-only scans that have no
+    text layer to name them by. ``prompt`` overrides the Settings
+    vision-description prompt for this one call.
+    """
+    try:
+        ws = get_workspace()
+        if ws.ocr_bridge().available():
+            return ws.ocr_bridge().describe(path, prompt=prompt)
+        return ws.vlm.describe(path, prompt=prompt)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "path": path, "error": str(exc)}
+
+
+@mcp.tool()
+def scan_suggest_filename(path: str) -> dict[str, Any]:
+    """Suggest a descriptive filename stem from an existing text layer/.ocr.md.
+
+    Offline and deterministic: date, document type, issuing entity and subject,
+    ASCII slugged. Use ``scan_ocr`` when the scan has no text yet.
+    """
+    try:
+        return get_workspace().ocr_bridge().suggest_name(path)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "path": path, "error": str(exc)}
+
+
+
 @mcp.resource("contex://status")
 def resource_status() -> str:
     """Current scanner status, settings, and calibration presets as JSON."""

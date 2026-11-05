@@ -18,7 +18,7 @@ open questions behind them.
 
 > **Corrections 2026-10-26 (later session).** Parts of §3.2, §3.5 and §4 were
 > wrong and have been corrected in place. The authoritative record is
-> Verified on hardware:
+> fresh-eyes session verdict (private development tree: `engineering/analysis/fresh/FRESH-EYES-VERDICT.md`):
 > the 26 % record loss was a **100 Mbit link**, not flow control or the device;
 > and the image format is **format-dependent** (§4.1), not a fixed 8,892-byte row.
 
@@ -192,9 +192,9 @@ take ~9 s; poll `READ 0x80/2` until byte 1 is `0x30` and interleave nothing.
 
 ### 2.8 `GET BUFFER STATUS (0x34)` — not implemented on this machine
 
-`[O]` Defined in ANSI SCSI-2 as GET BUFFER STATUS (`scanGetBufferStatus`;
-CDB `34 00 00 00 00 00 00 <alloc_be16> 00 …`, data-in, vendor default allocation
-`0x40`, all-zero token — see `ctx.session`).
+`[O]` The vendor driver has it (`scanGetBufferStatus`, `FUN_180070c00` in
+`CtxScan64.dll`; CDB `34 00 00 00 00 00 00 <alloc_be16> 00 …`, data-in, vendor
+default allocation `0x40`, all-zero token — private development tree: `engineering/analysis/native-scsi-and-discovery.md`).
 
 `[O]` **`[Verified]` 2026-10-26, live: the i4250s answers
 `CHECK CONDITION / ASC 0x20` = INVALID COMMAND OPERATION CODE** — with no data
@@ -262,7 +262,7 @@ table were inflated by `pktmon` duplicates and were wrong.**
 | ack (3) | **304** | `ai0 110`, one per 32 received records, `seq` = record just received |
 | nak (4) | **43** | one missing seq repeated ~9x (~0.6 s), then a retransmission arrives |
 | credit (5) | **13** | `seq 0, ai0 110`, **startup only** — all inside the first 0.73 s |
-| start-props (7) | 4 | two shapes; see `ctx.session` |
+| start-props (7) | 4 | two shapes; see the fresh-eyes verdict notes in the private development tree |
 | start (9) | 1 | `dlen 6`, `ai0 110` |
 
 `[O]` The scanner answers the host's opening `type 7` with its own `type 7` on the
@@ -386,7 +386,7 @@ hole-free: **8-bit / 1 camera** (stride 8,892) and **16-bit RGB / 5 cameras**
 (stride 81,840 = 5 × 16,368, i.e. 2,728 px RGB at 2 bytes per channel). What
 selects between them is still unknown — it survives a scanner power cycle, so it
 is not volatile device state. See
-the Gigabit Ethernet preflight in `ctx.engine`.
+fresh-eyes verdict (private development tree: `engineering/analysis/fresh/FRESH-EYES-VERDICT.md`).
 
 ### 4.2 Rotation
 
@@ -537,9 +537,13 @@ The gains are **not** equal per seam, which is why they must be per-camera.
 
 #### Reference implementation — reproduces the published image exactly
 
-`ctx.pipeline` implements this section and §6 and performs 5-camera
-stitching with sub-pixel alignment and seam blending across 12,600 × height pixels.
+`render_stitched.py` (private development tree: `engineering/tools/`) implements this
+section and §6 and regenerated `scan007-stitched-final.png` **pixel-for-pixel** (verified:
+100% identical, max |diff| = 0); the shipped stitcher is `ctx/pipeline.py`.
 
+```bash
+# private development tree only:
+python engineering/tools/render_stitched.py <capture>.pcapng out.png
 ```
 
 The exact parameter set that produced the published image — these are the values
@@ -596,8 +600,8 @@ be located. Above and below, the offset is constant on each side.
 (6.13 s continuous, zero gaps > 0.08 s), `dlen` truncation (238 KB total, only
 120 KB before the band — 40,000 px of shift, not 582 bytes).
 
-`[I]` **Hypothesis:** The driver recomputes `lineLength = totalBytes / lines`
-by integer division per buffer (§9.2), giving
+`[I]` **Hypothesis:** `BasicSTIScanner::scanGetLineLength()` recomputes
+`lineLength = totalBytes / lines` by integer division per buffer (§9.2), giving
 each buffer a marginally different effective line length. Test: look for
 `GET BUFFER STATUS (0x34)` state changes at the step row.
 
@@ -633,7 +637,7 @@ made the result marginally worse (0.710 → 0.720).
 
 `[O]` **Verified end to end on 2026-10-26** — this exact order produced
 `SCAN status=0x00`, device `0x24 SCANNING`, and 697,980 nonzero bytes
-(`ctx.engine` high-speed UDP stream collection with credit pumping).
+(private development tree: `engineering/tools/cap/replay_vendor.py --feed-credits --ack-every 32 --handshake-capture`).
 
 `[O]` Deviations that break it:
 
@@ -678,7 +682,8 @@ Use literal IPs — an unset PowerShell variable silently yields `http:///path`.
 ### Verification before decoding
 
 ```bash
-python -m ctx plan                                     # verify sequence & dry-run
+# private development tree:
+python engineering/tools/cap/verify_capture.py run.pcapng   # VERDICT: COMPLETE | INCOMPLETE
 ```
 
 Checks duplicate, out-of-order and missing sequence numbers. A capture that is
@@ -690,9 +695,12 @@ not COMPLETE must not be used for dimensional measurements.
 
 ### 9.1 `scanGetLineLength`
 
-`[O]` `CtxScan64.dll`:
+`[O]` `CtxScan64.dll` (`sha256 8d3ac809…`):
 
-scanGetLineLength — confirmed against live wire captures; the line length is computed from per-camera byte counts (see §2.2 and the 8,892 B / 81,840 B stride notes above).
+```
+export  scanGetLineLength                    0x1800369f0   façade, forwards via [rcx+0x120]
+  BasicSTIScanner::scanGetLineLength()       0x18002c590   implementation
+```
 
 ```c
 if (mode == 0) {
@@ -857,3 +865,71 @@ A decoder is conformant when all of the following hold on the reference capture
 
 A decoder is **not** conformant if it reports an image but never reassembled
 fragments — that decoder is discarding half of every record.
+
+
+---
+
+## 12. CIS Optical Channel Registration & RGB Row Offset (v0.2.0)
+
+### 12.1 Physical sensor geometry & channel displacement
+`[O]` The Contex HD Ultra Contact Image Sensor (CIS) modules read Red, Green, and Blue on physically separate sensor lines spaced along the paper transport axis.
+`[D]` Because paper travels continuously under the CIS glass, physical sensor displacement turns into a constant row lag along the Y-axis:
+* At 300 DPI: $\Delta Y_{\text{Red}} - Y_{\text{Blue}} \approx +6\text{ px}$, $\Delta Y_{\text{Green}} - Y_{\text{Blue}} \approx +3\text{ px}$.
+* Because the row lag is an optical transit time converted to pixels by paper speed ($v_{\text{paper}} \propto 1/\text{DPI}$), row offsets scale with resolution ($1.5\text{–}2\times$ at 400 DPI, reaching $\sim 24\text{–}30\text{ px}$ at 1200 DPI).
+
+`[O]` Uncorrected channel displacement causes severe chromatic fringing (yellow/red/blue halos) on sharp horizontal edges and CAD linework.
+
+### 12.2 Consensus cross-correlation alignment (`ctx/registration.py`)
+`[D]` Registration must be computed once across a global sample ($\ge 12,000\text{ rows}$) rather than per small band. Sparse or mostly white bands lack sufficient high-frequency edges and cause inter-band offset jitter, leading to discontinuous rainbow banding.
+1. Estimate $\Delta Y_R, \Delta Y_G$ via 1D normalized cross-correlation against Blue as reference.
+2. Search window $\pm \text{MAX\_LAG\_PX} = 64\text{ px}$.
+3. Shift Red and Green channels vertically using fractional/integer row indices onto Blue prior to color matrix evaluation.
+
+---
+
+## 13. Banded Spool Wire Stream & Memory-Bounded Processing (v0.2.0)
+
+### 13.1 Wire spooling & memory limits
+`[O]` A 30 ft sheet at 200 DPI generates $\sim 5.9\text{ GB}$ of raw UDP stream records. In single-pass processing, staging raw records, intermediate float32 camera arrays, and stitched 16-bit composites requires $7\text{–}10\times$ RAM ($\approx 40\text{–}60\text{ GB}$), leading to OOM termination on 32 GB workstations.
+`[D]` The memory-bounded banded architecture (`ctx/banded.py`):
+1. **Direct Disk Spooling**: High-speed UDP records stream directly to disk (`<scan>.spool` or `<scan>.rec`).
+2. **Row-Banded Processing**: Processes the stream in overlapping row chunks (default 4,000 rows $\approx 20\text{ in}$ at 200 DPI) with a 200-row cross-fade overlap.
+3. **RAM Ceiling**: Peak memory remains bounded to a single band ($\sim 2\text{–}3\text{ GB}$) regardless of whether the document is 3 feet or 50 feet long.
+
+### 13.2 Format constraints & multi-part JPEG
+`[O]` `libjpeg` has a strict architectural limit of $65,535\text{ px}$ on both dimensions.
+`[D]` Long documents exceeding $65,535\text{ rows}$ ($\approx 218\text{ in}$ at 300 DPI, $\approx 327\text{ in}$ at 200 DPI):
+* Written as numbered sequential parts (`_part1.jpg`, `_part2.jpg`, etc., $60,000\text{ rows}$ each).
+* A companion manifest (`<scan>.meta.json`) defines part offsets and global coordinates.
+* Single-file export automatically switches from JPEG to TIFF when rows exceed 65,535.
+
+---
+
+## 14. Paper Transport Safety & Error Recovery Protocol (v0.2.0)
+
+### 14.1 The `0x24 SCANNING` state & roller skew hazard
+`[O]` If a scan is interrupted or an error occurs, the scanner firmware remains in state `0x24 SCANNING` with the document held mid-path in the transport rollers.
+`[CAUTION]` Proprietary vendor software issues an automatic `Unload (0x31, fn=0)` followed by `Load (0x31, fn=1)`. However, `Unload` runs the paper drive at full hardware speed with zero tension feedback. On long ($> 10\text{ ft}$) or heavy bond sheets, minute roller imbalance walks the media diagonally into the mechanical side guides, causing severe creasing and tearing.
+
+### 14.2 Safe media protocol
+`[D]` In Open.NEXT v0.2.0:
+1. `recover=False` by default in all scan entry points.
+2. If `probe_status` reports `0x24`, the driver immediately aborts and refuses to drive rollers automatically. The operator is instructed to recover the sheet manually.
+3. Paper control commands (`0x31` fn=0 Unload, fn=1 Load, Eject Front `0xFFFFFE`, Eject Rear `0xFFFFFF`) are strictly operator-initiated actions.
+
+---
+
+## 15. Vision-Language LLM (VLM) & Title-Block Cataloging Protocol (v0.2.0)
+
+### 15.1 Architecture & integration
+`[D]` Large-format scans are cataloged via direct Vision-Language Models (`ctx/vlm.py`):
+1. Downscales preview to $\le 2048\text{ px}$ preserving aspect ratio and legible title-block typography.
+2. Encodes as JPEG Base64 and queries local Ollama (`qwen2.5vl:3b`, `qwen3-vl:2b/8b`, `glm-ocr`) or any OpenAI-compatible multimodal endpoint (`/v1/chat/completions`).
+3. Extracts structured JSON metadata:
+   * `doc_type`: Classification (`Architectural-Drawing`, `Blueprint`, `Floor-Plan`, `Sectional-Map`, `Fine-Art`, `Photograph`, etc.)
+   * `title`: Sheet or project title from title blocks or headers.
+   * `description`: 1–2 sentence visual and layout summary.
+   * `visible_text`: Prominent title block, revision, stamp, and legend text.
+   * `slug`: Normalized, hyphenated filename slug (3–5 words, alphanumeric and hyphens).
+   * `tags`: 3–6 search keywords.
+4. Auto-renames all output formats (TIFF, JPG, PDF) to `<Prefix>_<YYMMDDHHMM>_<NNNN>_<DocType>_<Slug>.<ext>` and writes a companion `.meta.json` sidecar.
