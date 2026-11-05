@@ -430,6 +430,7 @@ The scanner is a **raw sensor, not an imaging device** — it delivers raw 16-bi
 
 | File / Directory | Description |
 |---|---|
+| [`CHANGELOG.md`](CHANGELOG.md) | **Version Changelog** — Complete record of features, improvements and fixes between v1.0 and v2.0 |
 | [`docs/OCR-VISION-NAMING.md`](docs/OCR-VISION-NAMING.md) | **OCR, Vision & Descriptive Filenames** — shared `ocr-md` MCP module, adoption notes, API/tools and naming rules |
 | [`docs/IMPLEMENTATION-PLAN.md`](docs/IMPLEMENTATION-PLAN.md) | **App Architecture & Implementation Plan** — 2-stage Ubuntu/Windows strategy, workflow diagram, module design |
 | [`DESIGN.md`](DESIGN.md) | **Driver Architecture** — 8-stage pipeline, per-column LUTs, calibration profile schema, flash safety rule |
