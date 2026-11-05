@@ -1,7 +1,8 @@
 """Front-panel keys and ready-LED control, without vendor software.
 
 All of this was measured on the live HD Ultra i4250s (serial ``UNKNOWN``)
-on 2026-10-27; verified against hardware button press events.
+on 2026-10-27; the raw evidence log (``engineering/analysis/panel-buttons.md``) lives in
+the private development tree.
 
 Key events
 ----------

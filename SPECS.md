@@ -18,7 +18,7 @@ open questions behind them.
 
 > **Corrections 2026-10-26 (later session).** Parts of §3.2, §3.5 and §4 were
 > wrong and have been corrected in place. The authoritative record is
-> Verified on hardware:
+> fresh-eyes session verdict (private development tree: `engineering/analysis/fresh/FRESH-EYES-VERDICT.md`):
 > the 26 % record loss was a **100 Mbit link**, not flow control or the device;
 > and the image format is **format-dependent** (§4.1), not a fixed 8,892-byte row.
 
@@ -192,9 +192,9 @@ take ~9 s; poll `READ 0x80/2` until byte 1 is `0x30` and interleave nothing.
 
 ### 2.8 `GET BUFFER STATUS (0x34)` — not implemented on this machine
 
-`[O]` Defined in ANSI SCSI-2 as GET BUFFER STATUS (`scanGetBufferStatus`;
-CDB `34 00 00 00 00 00 00 <alloc_be16> 00 …`, data-in, vendor default allocation
-`0x40`, all-zero token — see `ctx.session`).
+`[O]` The vendor driver has it (`scanGetBufferStatus`, `FUN_180070c00` in
+`CtxScan64.dll`; CDB `34 00 00 00 00 00 00 <alloc_be16> 00 …`, data-in, vendor
+default allocation `0x40`, all-zero token — private development tree: `engineering/analysis/native-scsi-and-discovery.md`).
 
 `[O]` **`[Verified]` 2026-10-26, live: the i4250s answers
 `CHECK CONDITION / ASC 0x20` = INVALID COMMAND OPERATION CODE** — with no data
@@ -262,7 +262,7 @@ table were inflated by `pktmon` duplicates and were wrong.**
 | ack (3) | **304** | `ai0 110`, one per 32 received records, `seq` = record just received |
 | nak (4) | **43** | one missing seq repeated ~9x (~0.6 s), then a retransmission arrives |
 | credit (5) | **13** | `seq 0, ai0 110`, **startup only** — all inside the first 0.73 s |
-| start-props (7) | 4 | two shapes; see `ctx.session` |
+| start-props (7) | 4 | two shapes; see the fresh-eyes verdict notes in the private development tree |
 | start (9) | 1 | `dlen 6`, `ai0 110` |
 
 `[O]` The scanner answers the host's opening `type 7` with its own `type 7` on the
@@ -386,7 +386,7 @@ hole-free: **8-bit / 1 camera** (stride 8,892) and **16-bit RGB / 5 cameras**
 (stride 81,840 = 5 × 16,368, i.e. 2,728 px RGB at 2 bytes per channel). What
 selects between them is still unknown — it survives a scanner power cycle, so it
 is not volatile device state. See
-the Gigabit Ethernet preflight in `ctx.engine`.
+fresh-eyes verdict (private development tree: `engineering/analysis/fresh/FRESH-EYES-VERDICT.md`).
 
 ### 4.2 Rotation
 
@@ -537,9 +537,13 @@ The gains are **not** equal per seam, which is why they must be per-camera.
 
 #### Reference implementation — reproduces the published image exactly
 
-`ctx.pipeline` implements this section and §6 and performs 5-camera
-stitching with sub-pixel alignment and seam blending across 12,600 × height pixels.
+`render_stitched.py` (private development tree: `engineering/tools/`) implements this
+section and §6 and regenerated `scan007-stitched-final.png` **pixel-for-pixel** (verified:
+100% identical, max |diff| = 0); the shipped stitcher is `ctx/pipeline.py`.
 
+```bash
+# private development tree only:
+python engineering/tools/render_stitched.py <capture>.pcapng out.png
 ```
 
 The exact parameter set that produced the published image — these are the values
@@ -596,8 +600,8 @@ be located. Above and below, the offset is constant on each side.
 (6.13 s continuous, zero gaps > 0.08 s), `dlen` truncation (238 KB total, only
 120 KB before the band — 40,000 px of shift, not 582 bytes).
 
-`[I]` **Hypothesis:** The driver recomputes `lineLength = totalBytes / lines`
-by integer division per buffer (§9.2), giving
+`[I]` **Hypothesis:** `BasicSTIScanner::scanGetLineLength()` recomputes
+`lineLength = totalBytes / lines` by integer division per buffer (§9.2), giving
 each buffer a marginally different effective line length. Test: look for
 `GET BUFFER STATUS (0x34)` state changes at the step row.
 
@@ -633,7 +637,7 @@ made the result marginally worse (0.710 → 0.720).
 
 `[O]` **Verified end to end on 2026-10-26** — this exact order produced
 `SCAN status=0x00`, device `0x24 SCANNING`, and 697,980 nonzero bytes
-(`ctx.engine` high-speed UDP stream collection with credit pumping).
+(private development tree: `engineering/tools/cap/replay_vendor.py --feed-credits --ack-every 32 --handshake-capture`).
 
 `[O]` Deviations that break it:
 
@@ -678,7 +682,8 @@ Use literal IPs — an unset PowerShell variable silently yields `http:///path`.
 ### Verification before decoding
 
 ```bash
-python -m ctx plan                                     # verify sequence & dry-run
+# private development tree:
+python engineering/tools/cap/verify_capture.py run.pcapng   # VERDICT: COMPLETE | INCOMPLETE
 ```
 
 Checks duplicate, out-of-order and missing sequence numbers. A capture that is
@@ -690,9 +695,12 @@ not COMPLETE must not be used for dimensional measurements.
 
 ### 9.1 `scanGetLineLength`
 
-`[O]` `CtxScan64.dll`:
+`[O]` `CtxScan64.dll` (`sha256 8d3ac809…`):
 
-scanGetLineLength — confirmed against live wire captures; the line length is computed from per-camera byte counts (see §2.2 and the 8,892 B / 81,840 B stride notes above).
+```
+export  scanGetLineLength                    0x1800369f0   façade, forwards via [rcx+0x120]
+  BasicSTIScanner::scanGetLineLength()       0x18002c590   implementation
+```
 
 ```c
 if (mode == 0) {

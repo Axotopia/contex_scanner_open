@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Contex Studio
+GenericName=Large-Format Scanner Studio
+Comment=Scan, calibrate and export on the Contex HD Ultra i4250s
+Exec=contex-studio
+TryExec=contex-studio
+Icon=contex-studio
+Terminal=false
+Categories=Graphics;Scanning;
+Keywords=scanner;contex;scan;it8;calibration;scanning;
+StartupNotify=true
+StartupWMClass=Contex Studio
+X-GNOME-Autostart-enabled=false

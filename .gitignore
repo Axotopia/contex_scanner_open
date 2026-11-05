@@ -7,12 +7,10 @@ __pycache__/
 build/
 dist/
 *.egg-info/
-
 # Virtual environments
 .venv/
 venv/
 env/
-
 # Large scan artifacts, captures & raw streams
 scans_output/
 *.rec
@@ -28,10 +26,8 @@ scans_output/
 *.pkl
 *.pickle
 *.jsonl
-
 # Logs & session dumps
 *.log
-
 # Environment & credentials
 .env
 .env.*
@@ -41,21 +37,44 @@ scans_output/
 *.pfx
 *.p12
 .keys/
-
 # Operating System Files
 .DS_Store
 Thumbs.db
 desktop.ini
-
 # IDEs and Editors
 .idea/
 .vscode/
 *.swp
 *.swo
 *~
-
 # Vendor installers / extracted assets
 installers/
 extracted/
 sheets/
 reference/
+# Large local artifacts — not part of the repo.
+# The workspace holds ~6 GB of captures, installers and vendor payloads.
+engineering/tools/unshield/
+*.pyc
+# Captures and raw image data
+engineering/analysis/incoming/
+engineering/analysis/poc/
+# Keys — never commit
+*_deploy
+*_deploy.pub
+# Python virtualenv
+# Working renders — previews live in docs/images instead
+engineering/analysis/*.png
+engineering/analysis/*.jpg
+# vendor SDK reference (Contex Low-Level SDK, from MerlijnWajer/contex-scanning)
+# fresh-eyes session: raw record captures and streams stay local
+engineering/analysis/fresh/*.rec
+# record captures from the live-scan tools (engineering/analysis/fresh/ already covered)
+engineering/analysis/*.rec
+# heavy debug renders from the fresh-eyes session
+engineering/analysis/fresh/*.png
+# Concurrent analysis by the comms session — large working artifacts.
+# Do not `git add -A` in this workspace: another agent commits here too.
+engineering/analysis/color/
+engineering/analysis/fresh/
+# Contex Studio runtime scan exports and preview caches

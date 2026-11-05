@@ -15,8 +15,12 @@ from __future__ import annotations
 import asyncio
 from dataclasses import asdict, dataclass, field
 import json
+from datetime import datetime
 import os
 from pathlib import Path
+import re
+import shutil
+import subprocess
 import threading
 import time
 from typing import Any, Literal
@@ -31,6 +35,7 @@ from PIL import Image
 from pydantic import BaseModel, Field
 
 from .ai import EnhancementOptions
+from .ocr_bridge import OcrBridge, OcrBridgeError, normalize_vision_prompt
 from .calibration import (
     DEFAULT_GAPS,
     DEFAULT_SERIAL,
@@ -56,9 +61,9 @@ from .pipeline import (
     process_scan_to_stitch,
     MAX_SCAN_WIDTH_IN,
     EXPORT_RENDER_SUFFIX,
+    export_group_taken,
     export_variant_exists,
     find_free_export_group,
-    render_export_stem,
     resolve_next_scan_basename,
     resolve_paper_width,
     save_preview_image,
@@ -71,6 +76,137 @@ from .panel import PanelKey, PanelMonitor
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 WEB_DIR = Path(__file__).resolve().parent / "web"
+
+
+def _read_build_commit() -> str:
+    """Short git SHA of the code actually running, for /api/status.
+
+    Repeated confusion about whether a fix is live comes from a long-running
+    process serving older code; exposing the SHA makes that answerable.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=2, check=False,
+        )
+        return out.stdout.strip() or "unknown"
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+
+
+BUILD_COMMIT = _read_build_commit()
+BUILD_STARTED_AT = time.strftime("%Y-%m-%dT%H:%M:%S")
+
+# -- OCR source routing, name quality and local-health tracking --------------
+# Naming is the product of a large-format scan: the file has to be identifiable
+# from its name alone.  These helpers pick the cheapest input that can still
+# carry a name, decide whether a name is usable, and track when the local vision
+# model has become slow or flaky enough to prefer the cloud.
+
+#: Cheapest-to-decode first once the format is already on disk.
+_OCR_SOURCE_PREFERENCE = ("pdf", "jpg", "tiff", "png")
+#: Stems that carry no information for a human scanning a folder.
+_WEAK_OCR_STEMS = {"", "scan", "untitled", "document", "image", "unknown", "output"}
+#: Field values the module writes when it found nothing.
+_PLACEHOLDER_SEGMENTS = {"", "empty", "none", "null", "unknown", "na", "n-a"}
+
+
+def select_ocr_source(
+    exported: dict[str, Any],
+    *,
+    preview_path: Path | None = None,
+    prefer_preview: bool = True,
+) -> str | None:
+    """Choose the file handed to ``ocr_ingest`` (``None`` when nothing usable).
+
+    Naming reads the preview PNG the pipeline already wrote: the module caps the
+    vision model at ``max_side=2400`` and rasterises at 200 dpi, so a 42" sheet
+    reaches the model at exactly the same size either way.  Feeding the full
+    sheet would only buy a 113 MP decode first.  Without a preview it falls back
+    to an exported file (PDF, then the 8-bit rasters).
+    """
+    if prefer_preview and preview_path is not None and preview_path.is_file():
+        return str(preview_path)
+    by_format: dict[str, str] = {}
+    for item in exported.get("files") or []:
+        fmt = str(item.get("format", "")).lower()
+        path = item.get("path")
+        if fmt and path and Path(path).is_file():
+            by_format.setdefault(fmt, str(path))
+    for fmt in _OCR_SOURCE_PREFERENCE:
+        if fmt in by_format:
+            return by_format[fmt]
+    return None
+
+
+def ocr_name_is_weak(result: dict[str, Any], source_path: str | None = None) -> bool:
+    """True when a pass produced no descriptive name worth keeping."""
+    name = result.get("name")
+    stem = ""
+    method = ""
+    if isinstance(name, dict):
+        stem = str(name.get("stem") or "").strip()
+        method = str(name.get("method") or "").strip().lower()
+    elif name:
+        stem = str(name).strip()
+    if method == "off" or not stem:
+        return True
+    lowered = stem.lower()
+    if lowered in _WEAK_OCR_STEMS or len(stem) < 4:
+        return True
+    if source_path and lowered == Path(source_path).stem.lower():
+        return True
+    return False
+
+
+class OcrHealth:
+    """Rolling window over local naming outcomes; decides when to prefer cloud.
+
+    Opens after ``failures_to_open`` failures inside the last ``window`` runs.
+    A successful health probe resets it, so a briefly overloaded machine does
+    not stay on the cloud for the rest of the session.
+    """
+
+    def __init__(self, window: int = 5, failures_to_open: int = 3) -> None:
+        self._window = max(1, int(window))
+        self._threshold = max(1, int(failures_to_open))
+        self._outcomes: list[bool] = []
+
+    def record(self, ok: bool) -> None:
+        self._outcomes.append(bool(ok))
+        del self._outcomes[: -self._window]
+
+    @property
+    def outcomes(self) -> list[bool]:
+        return list(self._outcomes)
+
+    def prefer_cloud(self) -> bool:
+        return self._outcomes.count(False) >= self._threshold
+
+    def reset(self) -> None:
+        self._outcomes.clear()
+
+
+#: Highest acceptable sequence number.  Anything above this is a timestamp that
+#: leaked into the counter through filename parsing, and must be discarded.
+MAX_SEQUENCE_NUMBER = 99_999
+
+
+def clamp_sequence(value: Any, default: int = 1) -> int:
+    """Return ``value`` as a usable sequence number, or ``default``."""
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return default
+    return number if 1 <= number <= MAX_SEQUENCE_NUMBER else default
+
+
+def _positive_float(value: Any, default: float) -> float:
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return default
+    return out if out > 0 else default
 
 
 @dataclass
@@ -99,6 +235,9 @@ class AppSettings:
     auto_ai_enhance: bool = False
     output_dir: str = str(REPO_ROOT / "scans_output")
     filename_prefix: str = "scan"
+    # Include ``filename_prefix`` in the exported basename.  Off gives bare
+    # numbers (``0001.jpg``) instead of ``scan_0001.jpg``.
+    filename_prefix_enabled: bool = True
     auto_number_enabled: bool = True
     next_sequence_number: int = 1
     export_formats: list[str] = field(default_factory=lambda: ["tiff", "jpg", "pdf"])
@@ -107,8 +246,64 @@ class AppSettings:
     jpg_quality: int = 95
     post_scan_eject: str = "hold"        # "hold" | "eject_back" | "eject_front"
     debug_mode: bool = False
+    #: Long-document mode: spool to disk and stitch in bands.  Sticky so a bulk
+    #: run of long sheets does not have to re-tick it for every scan.
+    scan_long_mode: bool = False
+    scan_band_rows: int = 4000
+    #: Keep the raw capture of a long scan as a .rec beside the output, so a
+    #: 20 ft sheet never has to be fed twice to reprocess it.
+    long_keep_capture: bool = True
+    #: Long-mode output: "jpg" (split above part_rows) or "tiff" (always one file).
+    long_out_format: str = "auto"     # "auto" | "jpg" | "tiff"
+    long_single_file: bool = True
+    #: Newest long-mode captures (`.rec`) to keep; older ones are pruned.
+    long_capture_keep: int = 1
     photocraft_url: str = ""
     photocraft_api_key: str = ""
+    # OCR / vision / descriptive naming, provided by the shared ``ocr_md`` MCP
+    # module (the same server ocr-pdf-watcher runs).  ``ocr_auto`` runs it in a
+    # background thread after autosave; the MCP tools and /api/ocr work even
+    # when it is off.
+    ocr_auto: bool = False
+    ocr_command: str = ""              # e.g. "/path/venv/bin/python -m ocr_md.mcp_server"
+    # DEPRECATED(ui-naming): naming mode is derived (vision).  Kept for settings
+    # compatibility only.
+    ocr_naming: str = "heuristic"      # heuristic | llm | off
+    # DEPRECATED(ui-naming): no operator control since the profile dropdown was
+    # removed; kept only so old settings files still load.  Nothing reads these
+    # for a decision -- the naming pass derives its own options.
+    ocr_apply: str = "copy"            # none | copy | rename (copy keeps the numbered file)
+    ocr_vision: str = "auto"           # auto | always | never
+    # Custom instructions for the vision model that describes each scan (the
+    # pass that names image-only sheets).  Empty uses the shared module's
+    # built-in default, which /api/ocr/status reports as
+    # ``vision.describe_prompt`` so Settings can show it.  The reply must stay
+    # JSON with doc_type/title/description/visible_text/tags -- naming reads it.
+    ocr_vision_prompt: str = ""
+    ocr_image_only: bool = False
+    ocr_architectural: bool = False
+    # DEPRECATED(ui-naming): Single Final File is policy, not a setting, so the
+    # UI no longer exposes it.  Retained for settings-file compatibility.
+    ocr_cleanup: bool = True
+    # DEPRECATED(ui-naming): the timestamp is mandatory in every generated name
+    # and is composed by the app, so there is nothing left to toggle.
+    ocr_timestamp_prefix: bool = True
+    ocr_language: str = "eng"
+    ocr_max_pages: int = 25
+    # Local-first naming: a local pass that overruns this budget is abandoned and
+    # retried on the cloud vision provider.  Post-scan and asynchronous, so the
+    # operator never waits on it.
+    ocr_local_timeout_sec: float = 25.0
+    ocr_cloud_timeout_sec: float = 60.0
+    # Vision-provider overrides for the fallback bridge (same OCR module, a
+    # different vision backend).  Only non-secret routing values belong here --
+    # the API key stays in the environment, referenced by OCR_VISION_API_KEY_ENV:
+    #   {"OCR_VISION_PROVIDER": "openai",
+    #    "OCR_VISION_BASE_URL": "https://openrouter.ai/api/v1",
+    #    "OCR_VISION_API_KEY_ENV": "OPENROUTER_API_KEY",
+    #    "OCR_VISION_MODEL": "<model id>"}
+    # Empty disables the fallback and keeps every pass local.
+    ocr_cloud_env: dict[str, str] = field(default_factory=dict)
     # Front-panel keys (see ctx/panel.py). Disabled by default: pressing a key
     # then starts a live scan, which is a physical action.  Only SCAN is wired
     # for now; COPY/EMAIL emit events but do nothing until we decide what they
@@ -171,16 +366,56 @@ class AppSettings:
             auto_ai_enhance=bool(d.get("auto_ai_enhance", False)),
             output_dir=str(d.get("output_dir", REPO_ROOT / "scans_output")),
             filename_prefix=str(d.get("filename_prefix", "scan") or "scan"),
+            filename_prefix_enabled=bool(d.get("filename_prefix_enabled", True)),
             auto_number_enabled=bool(d.get("auto_number_enabled", True)),
-            next_sequence_number=max(1, int(d.get("next_sequence_number", 1))),
+            next_sequence_number=clamp_sequence(d.get("next_sequence_number", 1)),
             export_formats=list(d.get("export_formats") or ["tiff", "jpg", "pdf"]),
             color_mode=str(d.get("color_mode", "color")),
             tiff_16bit=bool(d.get("tiff_16bit", False)),
             jpg_quality=jpg_quality,
             post_scan_eject=str(d.get("post_scan_eject", "hold")),
             debug_mode=bool(d.get("debug_mode", False)),
+            scan_long_mode=bool(d.get("scan_long_mode", False)),
+            long_keep_capture=bool(d.get("long_keep_capture", True)),
+            long_out_format=(
+                str(d.get("long_out_format", "auto"))
+                if str(d.get("long_out_format", "auto")) in ("jpg", "tiff", "auto") else "auto"
+            ),
+            long_single_file=bool(d.get("long_single_file", True)),
+            long_capture_keep=max(0, min(10, int(d.get("long_capture_keep", 1) or 0))),
+            scan_band_rows=max(500, min(20000, int(d.get("scan_band_rows", 4000) or 4000))),
             photocraft_url=str(d.get("photocraft_url", "")),
             photocraft_api_key=str(d.get("photocraft_api_key", "")),
+            ocr_auto=bool(d.get("ocr_auto", False)),
+            ocr_command=str(d.get("ocr_command", "")),
+            ocr_naming=(
+                str(d.get("ocr_naming", "heuristic"))
+                if str(d.get("ocr_naming", "heuristic")) in ("heuristic", "llm", "off")
+                else "heuristic"
+            ),
+            ocr_apply=(
+                str(d.get("ocr_apply", "copy"))
+                if str(d.get("ocr_apply", "copy")) in ("none", "copy", "rename")
+                else "copy"
+            ),
+            ocr_vision=(
+                str(d.get("ocr_vision", "auto"))
+                if str(d.get("ocr_vision", "auto")) in ("auto", "always", "never")
+                else "auto"
+            ),
+            ocr_vision_prompt=normalize_vision_prompt(d.get("ocr_vision_prompt", "")),
+            ocr_image_only=bool(d.get("ocr_image_only", False)),
+            ocr_architectural=bool(d.get("ocr_architectural", False)),
+            ocr_cleanup=bool(d.get("ocr_cleanup", True)),
+            ocr_timestamp_prefix=bool(d.get("ocr_timestamp_prefix", True)),
+            ocr_language=str(d.get("ocr_language", "eng") or "eng"),
+            ocr_max_pages=max(1, min(200, int(d.get("ocr_max_pages", 25)))),
+            ocr_local_timeout_sec=_positive_float(d.get("ocr_local_timeout_sec"), 25.0),
+            ocr_cloud_timeout_sec=_positive_float(d.get("ocr_cloud_timeout_sec"), 60.0),
+            ocr_cloud_env={
+                str(key): str(value)
+                for key, value in (d.get("ocr_cloud_env") or {}).items()
+            },
             panel_keys_enabled=bool(d.get("panel_keys_enabled", False)),
             panel_scan_on_keys=list(d.get("panel_scan_on_keys", ["scan"])),
         )
@@ -218,6 +453,9 @@ class ScanJob:
     _stitch_preset: StitchResult | None = field(default=None, repr=False)
     _stitch_auto: StitchResult | None = field(default=None, repr=False)
     _stitch_ai: StitchResult | None = field(default=None, repr=False)
+    # OCR/vision/naming result for the exported PDF (see ctx/ocr_bridge.py).
+    ocr: dict[str, Any] = field(default_factory=dict)
+    _ocr_running: bool = field(default=False, repr=False)
 
     def to_public_dict(self) -> dict[str, Any]:
         return {
@@ -239,6 +477,7 @@ class ScanJob:
             "previews": self.previews,
             "seam_crops": self.seam_crops,
             "exported": self.exported,
+            "ocr": self.ocr,
             "applied_ai_filters": self.applied_ai_filters,
             # Which render views this job can still show/save.  Drift check off ->
             # no auto-adjusted render; AI only after post-processing.
@@ -281,13 +520,32 @@ class ScanWorkspaceManager:
             on_state=self._on_panel_state,
         )
         self._panel_scan_active = False
+        self._ocr_bridge: OcrBridge | None = None
+        self._ocr_bridge_key: tuple[str, str | None] | None = None
+        # Allocated scan number per scan_id.  Deriving it from trailing digits was
+        # wrong once the id started carrying a timestamp: "CU4KS_2610311512"
+        # turned the stamp into a number and re-exports incremented it.
+        self._scan_numbers: dict[str, int] = {}
+        # The allocation stamp travels with the number, so a scan's id and its
+        # filename cannot disagree when a long scan crosses a minute boundary.
+        self._scan_stamps: dict[str, str] = {}
+        self._ocr_cloud_bridge: OcrBridge | None = None
+        self._ocr_cloud_key: tuple[tuple[str, str], ...] | None = None
+        self._ocr_health = OcrHealth()
         if self.settings.panel_keys_enabled:
             self.panel.start()
 
     def _load_settings(self) -> AppSettings:
         if self.settings_path.exists():
             try:
-                return AppSettings.from_dict(json.loads(self.settings_path.read_text(encoding="utf-8")))
+                settings = AppSettings.from_dict(
+                    json.loads(self.settings_path.read_text(encoding="utf-8"))
+                )
+                if settings.ocr_auto:
+                    settings.autosave_enabled = True
+                if not settings.autosave_enabled:
+                    settings.ocr_auto = False
+                return settings
             except Exception:
                 pass
         s = AppSettings()
@@ -296,6 +554,619 @@ class ScanWorkspaceManager:
 
     def _save_settings(self, s: AppSettings) -> None:
         self.settings_path.write_text(json.dumps(s.to_dict(), indent=2), encoding="utf-8")
+
+    # -- OCR / vision / descriptive naming --------------------------------
+
+    def ocr_bridge(self) -> OcrBridge:
+        """The shared OCR module, reconfigured when the command setting changes."""
+        key = (self.settings.ocr_command.strip(), os.environ.get("OPENNEXT_OCR_CWD"))
+        if self._ocr_bridge is None or self._ocr_bridge_key != key:
+            if self._ocr_bridge is not None:
+                self._ocr_bridge.close()
+            self._ocr_bridge = OcrBridge(command=key[0] or None, cwd=key[1])
+            self._ocr_bridge_key = key
+        return self._ocr_bridge
+
+    def ocr_cloud_bridge(self) -> OcrBridge | None:
+        """Second module process with a cloud vision provider, or ``None``.
+
+        Same OCR module, different ``OCR_VISION_*`` environment.  A separate
+        process keeps the local and cloud configurations from leaking into each
+        other, and lets a stuck local call be killed without touching this one.
+        """
+        env = dict(self.settings.ocr_cloud_env)
+        if not env:
+            return None
+        key = tuple(sorted(env.items()))
+        if self._ocr_cloud_bridge is None or self._ocr_cloud_key != key:
+            if self._ocr_cloud_bridge is not None:
+                self._ocr_cloud_bridge.close()
+            self._ocr_cloud_bridge = OcrBridge(
+                command=self.settings.ocr_command.strip() or None,
+                cwd=os.environ.get("OPENNEXT_OCR_CWD"),
+                env=env,
+            )
+            self._ocr_cloud_key = key
+        return self._ocr_cloud_bridge
+
+    def ocr_status(self) -> dict[str, Any]:
+        try:
+            bridge = self.ocr_bridge()
+            status = bridge.status()
+            if not status.get("available"):
+                # The module may have been installed since the last probe.
+                status = bridge.status(refresh=True)
+            status["cloud"] = {
+                "configured": bool(self.settings.ocr_cloud_env),
+                "env_keys": sorted(self.settings.ocr_cloud_env),
+                "local_outcomes": self._ocr_health.outcomes,
+                "local_timeout_sec": self.settings.ocr_local_timeout_sec,
+            }
+            return status
+        except Exception as exc:  # noqa: BLE001 - status must never raise
+            return {"available": False, "reason": str(exc)}
+
+    def _ocr_source(self, job: ScanJob) -> str | None:
+        """The file handed to the OCR module for this job (``None`` if nothing)."""
+        preview = self.preview_cache_dir / job.scan_id / "preview_preset.png"
+        return select_ocr_source(job.exported, preview_path=preview)
+
+    def _local_vision_ready(self, timeout: float = 5.0) -> bool:
+        """Cheap probe used to re-close the cloud breaker."""
+        try:
+            status = self.ocr_bridge().call_tool("ocr_vision_status", {}, timeout=timeout)
+        except Exception:  # noqa: BLE001 - a failed probe simply means "not ready"
+            return False
+        return bool(status.get("ready"))
+
+    def _ingest_with_fallback(
+        self, source: str, options: dict[str, Any]
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Name a scan locally, escalating to the cloud vision provider.
+
+        Local runs first: it costs nothing and needs no upload.  The cloud is
+        used only when the local pass overruns its budget, fails outright,
+        returns no usable name, or when the rolling health window says local has
+        been unreliable.  Returns ``(result, route)``; ``route`` records what
+        actually happened so it can be written into the scan's metadata.
+        """
+        cloud = self.ocr_cloud_bridge()
+        route: dict[str, Any] = {"attempts": 0, "named_by": "local", "route": "local"}
+        prefer_cloud = cloud is not None and self._ocr_health.prefer_cloud()
+        if prefer_cloud and self._local_vision_ready():
+            # The breaker was open but local answers a probe again.
+            self._ocr_health.reset()
+            prefer_cloud = False
+
+        if not prefer_cloud:
+            started = time.monotonic()
+            try:
+                result = self.ocr_bridge().ingest(
+                    source,
+                    timeout=float(self.settings.ocr_local_timeout_sec),
+                    **options,
+                )
+            except Exception as exc:  # noqa: BLE001 - any local failure escalates
+                route["attempts"] = 1
+                route["latency_ms"] = int((time.monotonic() - started) * 1000)
+                route["reason"] = str(exc)
+                self._ocr_health.record(False)
+                # A timed-out call may still be running inside the module; a
+                # fresh process keeps the fallback out of that queue.
+                self.ocr_bridge().restart()
+            else:
+                route["attempts"] = 1
+                route["latency_ms"] = int((time.monotonic() - started) * 1000)
+                if not ocr_name_is_weak(result, source):
+                    self._ocr_health.record(True)
+                    return result, route
+                route["reason"] = "weak-name"
+                self._ocr_health.record(False)
+
+        if cloud is None:
+            raise OcrBridgeError(
+                "OCR naming produced no usable name "
+                f"({route.get('reason') or 'no cloud fallback configured'})"
+            )
+
+        started = time.monotonic()
+        result = cloud.ingest(
+            source,
+            timeout=float(self.settings.ocr_cloud_timeout_sec),
+            **options,
+        )
+        route["attempts"] = int(route["attempts"]) + 1
+        route["latency_ms"] = int((time.monotonic() - started) * 1000)
+        route["named_by"] = "cloud"
+        route["route"] = "cloud-first" if prefer_cloud else "local->cloud"
+        return result, route
+
+    def _ocr_options(self) -> dict[str, Any]:
+        """Naming-first options; the module does its own document routing.
+
+        Large-format naming reads the preview through the vision provider: a
+        full-page Tesseract pass only bought a searchable PDF that is not wanted
+        here, and it overran the latency budget on a 42" sheet.  ``architectural``
+        asks the module to look for a title block and name from those fields,
+        falling back to a visual description when there is none -- verified
+        against a hand-drawn sheet, where it rejects the block and still names.
+        """
+        options: dict[str, Any] = {
+            "apply": "rename",
+            "cleanup": True,
+            # The app owns the timestamp in the filename; letting the module add
+            # its own as well only produced two of them.
+            "timestamp_prefix": False,
+            "naming": "llm",
+            "vision": "auto",
+            "skip_ocr": True,
+            "architectural": True,
+            "language": self.settings.ocr_language,
+            "max_pages": self.settings.ocr_max_pages,
+        }
+        # Only send the prompt when the operator customized it; otherwise the
+        # module's own default stays in force (and can improve independently).
+        prompt = normalize_vision_prompt(self.settings.ocr_vision_prompt)
+        if prompt:
+            options["prompt"] = prompt
+        return options
+
+    def ocr_scan(
+        self,
+        scan_id: str,
+        *,
+        force: bool = False,
+        image_only: bool | None = None,
+        architectural: bool | None = None,
+        **overrides: Any,
+    ) -> dict[str, Any]:
+        """Describe the scan and give it a descriptive name.
+
+        The input is whichever exported file can carry a name (preview for an
+        image-only profile, otherwise PDF, then the rasters) -- a PDF is no
+        longer required.  Runs synchronously for agents/API; autosave uses
+        ``start_ocr`` so a scan never waits on Tesseract or the vision model.
+        """
+        job = self.get_job(scan_id)
+        source = self._ocr_source(job)
+        if source is None:
+            raise ValueError(
+                "this scan has no exported file to describe yet; export at least one format first"
+            )
+        options = self._ocr_options()
+        options.update({key: value for key, value in overrides.items() if value is not None})
+        if image_only is not None:
+            options["skip_ocr"] = image_only
+        if architectural is not None:
+            options["architectural"] = architectural
+        staged, work = self._stage_source(source)
+        if work is not None:
+            options["out_dir"] = str(work)
+        try:
+            result, route = self._ingest_with_fallback(
+                staged,
+                {**options, "force": force or None},
+            )
+            result["route"] = route
+            self._apply_naming(job, source, result)
+            job.ocr = result
+            # Naming may have renamed the files; record what it found beside them.
+            self._write_scan_meta(job, list(job.exported.get("files") or []))
+        finally:
+            if work is not None:
+                shutil.rmtree(work, ignore_errors=True)
+        self.broadcast_event(
+            "scan_ocr",
+            {"scan_id": scan_id, "name": result.get("name", {}), "route": route},
+        )
+        return result
+
+    def _apply_naming(
+        self, job: ScanJob, source: str, result: dict[str, Any]
+    ) -> None:
+        """Publish the name the module produced for this scan's own exports.
+
+        A PDF source keeps the single-final-file behaviour.  A raster source
+        (JPG/TIFF-only scan) gets the descriptive stem applied to the raster and
+        the module's extra descriptive PDF dropped when PDF was not requested --
+        otherwise a scan the operator asked to keep as TIFF would quietly gain a
+        PDF.
+        """
+        if str(source).lower().endswith(".pdf"):
+            self._finalize_single_pdf(job, source, result)
+        else:
+            self._adopt_raster_name(job, result)
+
+    @staticmethod
+    def _unique_target(target: Path) -> Path:
+        """``name.jpg`` -> ``name-2.jpg`` when a re-save would collide."""
+        n = 2
+        while True:
+            candidate = target.with_name(f"{target.stem}-{n}{target.suffix}")
+            if not candidate.exists():
+                return candidate
+            n += 1
+
+    @staticmethod
+    def _render_suffix(job: ScanJob, current: Path) -> str:
+        """``scan_0040_Auto.jpg`` -> ``_Auto``.
+
+        Exports carry the render variant as a suffix, and the three views of one
+        scan share a number.  Keeping the suffix on the descriptive name stops
+        ``_Auto`` and ``_AI`` from collapsing onto the same file.
+        """
+        name = current.stem
+        if name.startswith(job.scan_id):
+            rest = name[len(job.scan_id):]
+            # Only the real render markers count.  A re-export's stem tail is a
+            # sequence number, and treating that as a marker produced names like
+            # "..._Monet_0002.jpg".
+            if rest in ("_Auto", "_AI"):
+                return rest
+        return ""
+
+    @staticmethod
+    def _clean_description(stem: str) -> str:
+        """Strip the module's own timestamp and calendar date from its stem.
+
+        The module suggests ``<YYYYMMDDHHMM>_<YYYY-MM-DD>_<type>_<subject>``.
+        The app supplies the timestamp (it owns the filename convention), and a
+        second calendar date is noise beside it.
+        """
+        text = stem[:-4] if stem.endswith(".ocr") else stem
+        text = re.sub(r"^\d{10,12}_", "", text)
+        text = re.sub(r"(?<!\d)\d{4}-\d{2}-\d{2}(?!\d)_?", "", text)
+        text = re.sub(r"_{2,}", "_", text).strip("_-")
+        # The module emits its missing fields literally ("Drawing_empty_...").
+        parts = [p for p in text.split("_") if p.strip().lower() not in _PLACEHOLDER_SEGMENTS]
+        return "_".join(parts).strip("_-")
+
+    def _final_name(self, job: ScanJob, description: str, *, variant: str = "") -> str:
+        """``<Prefix>_<YYMMDDHHMM>_<auto#>_<description><variant>``.
+
+        The timestamp is mandatory so every scan is unique by time; the prefix,
+        number and description each appear only when their switch is on and the
+        piece exists.  A bare scan therefore lands as ``CU4KS_2610311444_0041``
+        before it is named at all.
+        """
+        parts: list[str] = []
+        if self.settings.filename_prefix_enabled:
+            prefix = "".join(
+                c if (c.isalnum() or c in "-_") else "_"
+                for c in (self.settings.filename_prefix or "").strip()
+            ).strip("_")
+            if prefix:
+                parts.append(prefix)
+        parts.append(self._stamp_for(job))
+        seq = int(self._scan_numbers.get(job.scan_id, 0))
+        if self.settings.auto_number_enabled and 0 < seq <= MAX_SEQUENCE_NUMBER:
+            parts.append(f"{seq:04d}")
+        cleaned = self._clean_description(description)
+        if cleaned:
+            parts.append(cleaned)
+        return "_".join(parts) + variant
+
+    def _stage_source(self, source: str) -> tuple[str, Path | None]:
+        """Copy a cache-resident source into a throwaway work directory.
+
+        Previews live in the preview cache; letting the module write its
+        ``.ocr.*`` artefacts beside them litters the cache and leaves the
+        descriptive PDF somewhere nobody looks.  Staging keeps everything in one
+        place that the caller deletes afterwards.
+        """
+        src = Path(source)
+        try:
+            src.relative_to(self.preview_cache_dir)
+        except ValueError:
+            return source, None
+        work = Path(self.settings.output_dir) / ".ocr_work" / src.stem
+        try:
+            work.mkdir(parents=True, exist_ok=True)
+            staged = work / src.name
+            shutil.copy2(src, staged)
+        except OSError:
+            return source, None
+        return str(staged), work
+
+    def _adopt_raster_name(self, job: ScanJob, result: dict[str, Any]) -> None:
+        """Rename exported rasters to the descriptive stem; drop an unwanted PDF."""
+        pdf_path = result.get("pdf_path")
+        if not pdf_path:
+            return
+        final_pdf = Path(str(pdf_path))
+        if not final_pdf.is_file():
+            return
+        stem = self._final_name(job, final_pdf.stem)
+        if not stem:
+            return
+        result["pdf_path"] = str(final_pdf)
+
+        files = list(job.exported.get("files") or [])
+        out_dir = Path(self.settings.output_dir)
+        has_pdf_export = any(
+            str(item.get("format", "")).lower() == "pdf" for item in files
+        )
+        adopted = 0
+        for item in files:
+            current = Path(str(item.get("path") or ""))
+            if str(item.get("format", "")).lower() == "pdf":
+                # The module already wrote the descriptive PDF.  Adopt it and
+                # drop the numbered one, exactly as the PDF-source path does --
+                # otherwise an image-only probe would leave both on disk.
+                if not final_pdf.is_file():
+                    continue
+                pdf_target = out_dir / f"{stem}.pdf"
+                if pdf_target != final_pdf and pdf_target.exists():
+                    pdf_target = out_dir / f"{stem}{self._render_suffix(job, current)}.pdf"
+                if pdf_target != final_pdf and not pdf_target.exists():
+                    try:
+                        final_pdf.rename(pdf_target)
+                        final_pdf = pdf_target
+                        result["pdf_path"] = str(final_pdf)
+                    except OSError:
+                        pass
+                if current.is_file() and current != final_pdf:
+                    try:
+                        current.unlink()
+                    except OSError as exc:
+                        self.broadcast_event(
+                            "scan_ocr_warning",
+                            {"scan_id": job.scan_id, "warning": f"could not remove {current.name}: {exc}"},
+                        )
+                item["path"] = str(final_pdf)
+                try:
+                    item["size_bytes"] = final_pdf.stat().st_size
+                except OSError:
+                    pass
+                adopted += 1
+                continue
+            if not current.is_file():
+                continue
+            target = out_dir / f"{stem}{current.suffix}"
+            if target != current and target.exists():
+                # Only disambiguate render views when they would actually clash.
+                target = out_dir / f"{stem}{self._render_suffix(job, current)}{current.suffix}"
+            if target == current:
+                adopted += 1
+                continue
+            if target.exists():
+                # A previous save of this scan already took the plain name; the
+                # descriptive name still wins, with a numeric discriminator.
+                target = self._unique_target(target)
+            try:
+                current.rename(target)
+            except OSError as exc:
+                self.broadcast_event(
+                    "scan_ocr_warning",
+                    {"scan_id": job.scan_id, "warning": f"could not rename {current.name}: {exc}"},
+                )
+                continue
+            item["path"] = str(target)
+            try:
+                item["size_bytes"] = target.stat().st_size
+            except OSError:
+                pass
+            adopted += 1
+
+        if adopted:
+            job.exported["files"] = files
+            self._write_scan_meta(job, files, stem=stem)
+            if not has_pdf_export:
+                try:
+                    final_pdf.unlink()
+                    result["extra_pdf_removed"] = True
+                except OSError as exc:
+                    self.broadcast_event(
+                        "scan_ocr_warning",
+                        {"scan_id": job.scan_id, "warning": f"could not remove {final_pdf.name}: {exc}"},
+                    )
+        result["adopted_stem"] = stem
+        result["renamed_exports"] = adopted
+
+    @staticmethod
+    def _sidecar_ocr_block(result: dict[str, Any]) -> dict[str, Any]:
+        """Project the module's naming result into the reference fields.
+
+        Everything here came back from the module: the description is the vision
+        summary, ``date`` is the calendar date we deliberately drop from the
+        filename, and ``title_block`` is the structured block when one was found.
+        """
+        name = result.get("name") or {}
+        vision = result.get("vision") or {}
+        return {
+            "schema": 1,
+            "named": bool(name.get("stem")),
+            "description": result.get("description") or "",
+            "doc_type": name.get("doc_type"),
+            "subject": name.get("subject"),
+            "title": name.get("title"),
+            "entity": name.get("entity"),
+            "date": name.get("date"),
+            "confidence": name.get("confidence"),
+            "method": name.get("method"),
+            "signals": list(name.get("signals") or []),
+            "title_block": result.get("title_block"),
+            "vision": (
+                {k: vision.get(k) for k in ("used", "model", "mode", "sparse_input")}
+                if vision else None
+            ),
+            "warnings": list(result.get("warnings") or []),
+            "route": result.get("route"),
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        }
+
+    def _write_scan_meta(
+        self, job: ScanJob, files: list[dict[str, Any]], stem: str | None = None
+    ) -> None:
+        """Write the scan sidecar, following the file it describes.
+
+        One sidecar per scan, named after the scan's own file, carrying both the
+        pipeline facts and (once naming has run) the OCR/description block.
+        ``rel_path`` makes the record portable when the output folder moves.
+        """
+        out_dir = Path(self.settings.output_dir)
+        current = Path(str(job.exported.get("metadata_path") or ""))
+        if stem:
+            target = out_dir / f"{stem}.meta.json"
+        elif files:
+            target = out_dir / f"{Path(str(files[0].get('path') or job.scan_id)).stem}.meta.json"
+        else:
+            target = out_dir / f"{job.scan_id}.meta.json"
+
+        payload: dict[str, Any] = {}
+        if current.is_file():
+            try:
+                payload = json.loads(current.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                payload = {}
+
+        entries: list[dict[str, Any]] = []
+        for item in files:
+            entry = dict(item)
+            path = Path(str(item.get("path") or ""))
+            try:
+                entry["rel_path"] = str(path.relative_to(out_dir))
+            except ValueError:
+                entry["rel_path"] = path.name
+            entries.append(entry)
+
+        payload["schema"] = 2
+        payload["base_name"] = target.name[: -len(".meta.json")]
+        payload["files"] = entries
+        pdf_entry = next(
+            (item for item in entries if str(item.get("format", "")).lower() == "pdf"),
+            None,
+        )
+        payload["final_pdf"] = (pdf_entry or {}).get("path")
+        ocr = job.ocr if isinstance(job.ocr, dict) else {}
+        if ocr.get("ok"):
+            payload["ocr"] = self._sidecar_ocr_block(ocr)
+
+        try:
+            target.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        except OSError as exc:
+            self.broadcast_event(
+                "scan_ocr_warning",
+                {"scan_id": job.scan_id, "warning": f"could not write {target.name}: {exc}"},
+            )
+            return
+
+        if current.is_file() and current != target:
+            try:
+                current.unlink()
+            except OSError:
+                pass
+        job.exported["metadata_path"] = str(target)
+
+    def _finalize_single_pdf(
+        self, job: ScanJob, original_pdf: str | None, result: dict[str, Any]
+    ) -> None:
+        """After a cleanup ingest, drop the numbered export and repoint metadata.
+
+        The module never deletes its input, so the app does it here once the
+        descriptive PDF exists.  The small ``.meta.json`` stays: numbering and
+        collision checks read it, and it is updated to the new PDF path.
+        """
+        if not result.get("cleanup") or not result.get("pdf_path"):
+            return
+        final_path = Path(result["pdf_path"])
+        if not final_path.is_file():
+            return
+        # The module prefixes descriptive names with YYYYMMDDHHMM; the app uses
+        # the shorter YYMMDDHHMM everywhere else, so normalise here while we own
+        # the only reference to the file.
+        # Compose the operator's filename convention.  A render marker is only
+        # added when it is needed to keep two exports of one scan apart, so an
+        # ordinary scan does not carry a "_Auto" that says nothing.
+        desired = self._final_name(job, final_path.stem)
+        target = final_path.with_name(f"{desired}{final_path.suffix}")
+        if target != final_path and target.exists() and original_pdf:
+            marker = self._render_suffix(job, Path(original_pdf))
+            target = final_path.with_name(f"{desired}{marker}{final_path.suffix}")
+        if target != final_path and target.exists():
+            target = self._unique_target(target)
+        if target != final_path and not target.exists():
+            try:
+                final_path.rename(target)
+                final_path = target
+            except OSError:
+                pass
+        result["pdf_path"] = str(final_path)
+        if original_pdf and Path(original_pdf) != final_path:
+            try:
+                Path(original_pdf).unlink()
+            except OSError as exc:
+                self.broadcast_event(
+                    "scan_ocr_warning",
+                    {"scan_id": job.scan_id, "warning": f"could not remove {original_pdf}: {exc}"},
+                )
+        files = list(job.exported.get("files") or [])
+        for item in files:
+            if str(item.get("format", "")).lower() == "pdf":
+                item["path"] = str(final_path)
+                try:
+                    item["size_bytes"] = final_path.stat().st_size
+                except OSError:
+                    pass
+        job.exported["files"] = files
+        if original_pdf:
+            meta_path = Path(original_pdf).with_suffix(".meta.json")
+            if meta_path.is_file():
+                try:
+                    payload = json.loads(meta_path.read_text(encoding="utf-8"))
+                    payload["files"] = files
+                    payload["final_pdf"] = str(final_path)
+                    meta_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+                    meta_target = final_path.with_name(f"{final_path.stem}.meta.json")
+                    if meta_target != meta_path:
+                        try:
+                            meta_path.rename(meta_target)
+                            job.exported["metadata_path"] = str(meta_target)
+                        except OSError:
+                            pass
+                except (OSError, ValueError):
+                    pass
+
+    def start_ocr(self, scan_id: str) -> bool:
+        """Queue the naming pass on a background thread; False if impossible.
+
+        Any exported file will do: the preview for an image-only profile,
+        otherwise the best full-resolution source.  A PDF is not required.
+        """
+        job = self.get_job(scan_id)
+        if job._ocr_running:
+            return False
+        source = self._ocr_source(job)
+        if source is None:
+            return False
+        job._ocr_running = True
+
+        def _run() -> None:
+            work: Path | None = None
+            try:
+                staged, work = self._stage_source(source)
+                options = self._ocr_options()
+                if work is not None:
+                    options["out_dir"] = str(work)
+                result, route = self._ingest_with_fallback(staged, options)
+                result["route"] = route
+                self._apply_naming(job, source, result)
+                job.ocr = result
+                self._write_scan_meta(job, list(job.exported.get("files") or []))
+                self.broadcast_event(
+                    "scan_ocr",
+                    {"scan_id": scan_id, "name": result.get("name", {}), "route": route},
+                )
+            except Exception as exc:  # noqa: BLE001 - background work is best-effort
+                job.ocr = {"ok": False, "error": str(exc)}
+                self.broadcast_event("scan_ocr_error", {"scan_id": scan_id, "error": str(exc)})
+            finally:
+                if work is not None:
+                    shutil.rmtree(work, ignore_errors=True)
+                job._ocr_running = False
+
+        threading.Thread(target=_run, name=f"ocr-{scan_id}", daemon=True).start()
+        return True
 
     def update_settings(self, updates: dict[str, Any]) -> AppSettings:
         cur = self.settings.to_dict()
@@ -307,6 +1178,11 @@ class ScanWorkspaceManager:
             # Autosave must write at least one real file; never persist an empty list.
             cur["export_formats"] = formats or list(cur.get("export_formats") or ["jpg"])
         self.settings = AppSettings.from_dict(cur)
+        # Auto-naming runs after autosave; the two cannot be inconsistent.
+        if self.settings.ocr_auto:
+            self.settings.autosave_enabled = True
+        if not self.settings.autosave_enabled:
+            self.settings.ocr_auto = False
         self.engine.host = self.settings.scanner_ip
         self.preview_cache_dir = Path(self.settings.output_dir) / ".previews"
         self.preview_cache_dir.mkdir(parents=True, exist_ok=True)
@@ -340,8 +1216,10 @@ class ScanWorkspaceManager:
             )
         if code == 0x24:
             raise RuntimeError(
-                "Scanner is still scanning (0x24). Wait for it to finish, or use Recover (0x24), "
-                "before starting a new scan."
+                "Media is still at a mid-scan position (0x24). Recover the sheet BY HAND, "
+                "then start the scan again. The app will not run the Unload -> Load cycle "
+                "by itself: it feeds `unload` at full roller speed and can skew or tear "
+                "long media."
             )
 
     def _settings_scan_kwargs(self) -> dict[str, Any]:
@@ -399,8 +1277,12 @@ class ScanWorkspaceManager:
         found: list[dict[str, Any]] = []
         seen_paths: set[str] = set()
         search_roots = [
+            (REPO_ROOT / "engineering" / "analysis", True),
             (Path(self.settings.output_dir), True),
-            (REPO_ROOT / "scans_output", True),
+            (Path("W:/contex_scanner"), False),
+            (Path("/mnt/w/contex_scanner"), False),
+            (Path("W:/Scans_XL"), False),
+            (Path("/mnt/w/Scans_XL"), False),
         ]
         for root_dir, recursive in search_roots:
             try:
@@ -451,32 +1333,74 @@ class ScanWorkspaceManager:
         out_path.parent.mkdir(parents=True, exist_ok=True)
         im.save(out_path, format="PNG")
 
+    @staticmethod
+    def scan_stamp(created_at: str | None = None) -> str:
+        """``YYMMDDHHMM`` for a scan: its own time, not the moment we rename it.
+
+        Using the scan's timestamp keeps a re-run stable, and it is the one
+        component a filename always carries.
+        """
+        if created_at:
+            try:
+                return datetime.strptime(created_at, "%Y-%m-%dT%H:%M:%S").strftime("%y%m%d%H%M")
+            except ValueError:
+                pass
+        return time.strftime("%y%m%d%H%M")
+
     def allocate_next_scan_id(self, custom_prefix: str | None = None) -> str:
-        """Allocate the next sequential auto-numbered scan basename (e.g. ``scan_0001``)
-        guaranteed not to collide with any existing file in ``output_dir`` or in-memory job."""
-        prefix = (custom_prefix or self.settings.filename_prefix or "scan").strip()
-        if custom_prefix and custom_prefix.strip() != self.settings.filename_prefix:
-            self.settings.filename_prefix = prefix
+        return self.allocate_next_scan(custom_prefix)[0]
+
+    def _stamp_for(self, job: ScanJob) -> str:
+        """The stamp the scan was allocated with, not the moment we rename it."""
+        return self._scan_stamps.get(str(job.scan_id)) or self.scan_stamp(job.created_at)
+
+    def allocate_next_scan(self, custom_prefix: str | None = None) -> tuple[str, int]:
+        """Allocate the scan basename: ``[prefix_]YYMMDDHHMM[_NNNN]``.
+
+        The timestamp is always present, so every scan is unique by time even
+        with every other component switched off.  The number is added only when
+        auto-numbering is on; a same-minute second scan without a number gets a
+        ``-2``-style discriminator rather than overwriting the first.
+        """
+        prefix = ""
+        if self.settings.filename_prefix_enabled:
+            prefix = (custom_prefix or self.settings.filename_prefix or "scan").strip()
+            if custom_prefix and custom_prefix.strip() != self.settings.filename_prefix:
+                self.settings.filename_prefix = prefix
+            prefix = "".join(
+                c if (c.isalnum() or c in "-_") else "_" for c in prefix
+            ).strip("_")
+
+        stamp = self.scan_stamp()
+        stem_prefix = f"{prefix}_{stamp}" if prefix else stamp
 
         if self.settings.auto_number_enabled:
-            seq = max(1, int(self.settings.next_sequence_number))
+            seq = clamp_sequence(self.settings.next_sequence_number)
             while True:
-                # Reserve a number that is free for *every* render variant
-                # (_Auto / _AI included) so the three views of a scan can share it.
                 base, found_seq = find_free_export_group(
                     self.settings.output_dir,
-                    prefix=prefix,
+                    prefix=stem_prefix,
                     start_seq=seq,
                     digits=4,
                 )
                 if base not in self.jobs:
                     self.settings.next_sequence_number = found_seq + 1
                     self._save_settings(self.settings)
-                    return base
-                # Number is free on disk but already used by an in-memory job
-                # (autosave off, nothing written yet): take the next one.
+                    self._scan_numbers[base] = found_seq
+                    self._scan_stamps[base] = stamp
+                    return base, found_seq
                 seq = found_seq + 1
-        return f"{prefix}-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:4]}"
+
+        # No number: the timestamp alone, discriminated only on a same-minute
+        # collision.
+        candidate = stem_prefix
+        suffix = 2
+        while export_group_taken(self.settings.output_dir, candidate) or candidate in self.jobs:
+            candidate = f"{stem_prefix}-{suffix}"
+            suffix += 1
+        self._scan_numbers[candidate] = 0
+        self._scan_stamps[candidate] = stamp
+        return candidate, 0
 
     def execute_scan_workflow(
         self,
@@ -493,6 +1417,231 @@ class ScanWorkspaceManager:
                 if self._active_cancel is event:
                     self._active_cancel = None
                     self._active_scan_id = None
+
+    #: Measured peak-RAM-to-wire-stream ratio of the single-pass pipeline
+    #: (frames + join copy + five parallel float32 camera calibrations +
+    #: full-width composite + export).  A 112 in / 1.84 GB capture peaked near
+    #: 18 GB (9.8x) and a 30 ft / 5.9 GB capture reached 30.5 GB and was
+    #: OOM-killed, so the guard below divides by the pessimistic end.
+    PEAK_TO_STREAM_RATIO = 9.0
+
+    def _max_single_pass_stream_bytes(self) -> int:
+        """Largest wire stream the single-pass stitch can hold on this host.
+
+        Reads ``MemAvailable`` (not ``MemFree``: page cache is reclaimable) and
+        keeps 40% for the desktop and the stitch transients.
+        """
+        try:
+            for line in Path("/proc/meminfo").read_text().splitlines():
+                if line.startswith("MemAvailable:"):
+                    available = int(line.split()[1]) * 1024
+                    return int(available * 0.60 / self.PEAK_TO_STREAM_RATIO)
+        except Exception:
+            pass
+        return int(1.5 * 1024**3)  # conservative fallback: ~90 in at 200 dpi
+
+    # -- long-scan captures (.rec) -----------------------------------------
+    #: A .rec is the payload stream plus `<u32 seq><u16 len>` per 2,960-byte
+    #: record, so payload = size * 2960/2966 and rows = payload / 81,840.
+    CAPTURE_RECORD_BYTES = 2960
+
+    def _captures_dir(self) -> Path:
+        return Path(self.settings.output_dir) / "captures"
+
+    def list_captures(self) -> list[dict[str, Any]]:
+        """Saved long-scan captures, newest first, with sizes and row estimates."""
+        d = self._captures_dir()
+        if not d.exists():
+            return []
+        items: list[dict[str, Any]] = []
+        for p in d.glob("*.rec"):
+            try:
+                st = p.stat()
+            except OSError:
+                continue
+            payload = int(st.st_size * self.CAPTURE_RECORD_BYTES
+                          / (self.CAPTURE_RECORD_BYTES + 6))
+            items.append({
+                "name": p.name,
+                "path": str(p),
+                "size_bytes": st.st_size,
+                "rows": payload // 81840,
+                "modified_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(st.st_mtime)),
+                "mtime": st.st_mtime,
+            })
+        items.sort(key=lambda c: c["mtime"], reverse=True)
+        return items
+
+    def delete_capture(self, name: str) -> dict[str, Any]:
+        """Delete one capture by bare filename (no separators, no dotfiles)."""
+        if not name or name != Path(name).name or name.startswith(".") or "/" in name:
+            raise ValueError("invalid capture name")
+        path = self._captures_dir() / name
+        if not path.exists():
+            raise ValueError(f"no such capture: {name}")
+        size = path.stat().st_size
+        path.unlink()
+        return {"deleted": name, "size_bytes": size}
+
+    def prune_captures(self, keep: int | None = None) -> list[str]:
+        """Keep the newest N captures and delete the rest; returns removed names."""
+        keep = self.settings.long_capture_keep if keep is None else int(keep)
+        removed: list[str] = []
+        for cap in self.list_captures()[max(0, keep):]:
+            try:
+                Path(cap["path"]).unlink()
+                removed.append(cap["name"])
+            except OSError:
+                pass
+        return removed
+
+    def _finish_long_scan(
+        self,
+        *,
+        scan_id: str,
+        cap: Any,
+        preset: CalibrationPreset,
+        dpi: int,
+        width_inches: float,
+        color_mode: str,
+        band_rows: int,
+        overlap_rows: int,
+        t0: float,
+    ) -> ScanJob:
+        """Stitch a spooled capture in bands and register it as a finished job.
+
+        Long scans deliberately skip the per-scan drift check and the seam-crop
+        previews: both need the whole document in RAM, which is the thing this
+        mode exists to avoid.
+        """
+        from .banded import process_spool_banded
+
+        out_dir = Path(self.settings.output_dir)
+        self.broadcast_event(
+            "scan_progress",
+            {"scan_id": scan_id, "stage": "band_stitch", "rows": cap.rows},
+        )
+        try:
+            manifest = process_spool_banded(
+                cap.spool_path,
+                out_dir,
+                preset=preset,
+                width_inches=width_inches,
+                dpi=dpi,
+                capture_dpi=dpi,
+                band_rows=band_rows,
+                overlap_rows=overlap_rows,
+                jpg_quality=self.settings.jpg_quality,
+                out_format=self.settings.long_out_format,
+                single_file=self.settings.long_single_file,
+                base_name=scan_id,
+                progress=lambda m: self.broadcast_event(
+                    "scan_progress", {"scan_id": scan_id, "stage": "band_stitch", **m}
+                ),
+            )
+        finally:
+            pass
+
+        # Keep the capture as a .rec unless the operator turned that off: a long
+        # sheet is expensive to refeed, and a .rec can be reloaded (rec_file) or
+        # reprocessed later -- different crop, DPI, seam equalisation, larger
+        # bands, or after a pipeline fix -- with no scanner involved.
+        capture: dict[str, Any] = {}
+        if cap.spool_path:
+            try:
+                if self.settings.long_keep_capture and str(cap.source).startswith("live://"):
+                    from .banded import spool_to_rec
+
+                    rec_path = out_dir / "captures" / f"{scan_id}.rec"
+                    capture = spool_to_rec(cap.spool_path, rec_path)
+                    pruned = self.prune_captures()
+                    if pruned:
+                        capture["pruned"] = pruned
+            except Exception as exc:  # never lose a finished scan over this
+                capture = {"error": str(exc)}
+        if cap.spool_path:
+            try:
+                Path(cap.spool_path).unlink()
+            except OSError:
+                pass
+
+        files = [
+            {
+                "format": part.get("format", "jpg"),
+                "color_mode": color_mode,
+                "path": part["path"],
+                "size_bytes": part["size_bytes"],
+            }
+            for part in manifest["parts"]
+        ]
+
+        # A banded job holds no raster, so build the preview panes from part 1.
+        # ``draft`` decodes the JPEG at a reduced scale, keeping this cheap even
+        # for a 45k-row sheet.
+        previews: dict[str, str] = {}
+        try:
+            from PIL import Image as _Image
+
+            _Image.MAX_IMAGE_PIXELS = None
+            cache = self.preview_cache_dir / scan_id
+            cache.mkdir(parents=True, exist_ok=True)
+            im = _Image.open(manifest["parts"][0]["path"])
+            im.draft("RGB", (1200, 1200))
+            im = im.convert("RGB")
+            im.thumbnail((1200, 8000))
+            im.save(cache / "preview_preset.png", format="PNG")
+            im.save(cache / "preview_raw.png", format="PNG")
+            previews = {
+                "raw": f"/api/scans/{scan_id}/preview/raw",
+                "preset": f"/api/scans/{scan_id}/preview/preset",
+            }
+        except Exception:
+            previews = {}
+        job = ScanJob(
+            scan_id=scan_id,
+            created_at=time.strftime("%Y-%m-%dT%H:%M:%S"),
+            source=cap.source,
+            width_inches=round(float(width_inches), 2),
+            dpi=int(dpi),
+            color_mode=color_mode,
+            preset_id=preset.id,
+            status="ready",
+            active_render_mode="preset",
+            rows=int(manifest["rows"]),
+            records_count=int(cap.records_count),
+            holes=int(cap.holes),
+            duration_seconds=round(time.time() - t0, 2),
+            drift_report={"verdict": "SKIPPED", "reason": "long-document mode"},
+            stitch_metadata={
+                "mode": "preset",
+                "preset_id": preset.id,
+                "rows": manifest["rows"],
+                "composite_width": manifest["document_width_px"],
+                "document_width": manifest["document_width_px"],
+                "width_inches": round(float(width_inches), 2),
+                "height_inches": manifest["inches"],
+                "dpi": int(dpi),
+                "long_mode": True,
+                "bands": manifest["bands"],
+                "band_rows": band_rows,
+                "overlap_rows": overlap_rows,
+                "part_count": len(files),
+            },
+            previews=previews,
+            exported={
+                "output_dir": str(out_dir),
+                "base_name": scan_id,
+                "files": files,
+                "metadata_path": manifest["metadata_path"],
+                "long_mode": True,
+                "part_count": len(files),
+                "capture": capture,
+            },
+        )
+        job._buffers_released = True  # nothing retained, by construction
+        self.jobs[scan_id] = job
+        self.broadcast_event("scan_completed", job.to_public_dict())
+        return job
 
     def cancel_active_scan(self) -> dict[str, Any]:
         """Ask the running scan to stop at the next safe point."""
@@ -562,11 +1711,19 @@ class ScanWorkspaceManager:
         demo_rows: int = 960,
         demo_paper_width_inches: float = 36.0,
         filename_prefix: str | None = None,
+        long_mode: bool = False,
+        band_rows: int = 4000,
+        overlap_rows: int = 200,
         cancel_event: threading.Event | None = None,
     ) -> ScanJob:
         """Run the full scan -> color adjust -> drift check -> stitch -> preview/autosave flow."""
         if source_mode == "live":
             self._preflight_live_scan()
+        if long_mode and seconds <= 30.0:
+            # A long sheet needs a long read window; the old 25 s default is what
+            # silently cut every scan at ~100 in.  The stream ends early on end
+            # of media, so a generous window costs nothing.
+            seconds = 1800.0
         scan_id = self.allocate_next_scan_id(filename_prefix)
         cancel_event = cancel_event or threading.Event()
         with self._cancel_lock:
@@ -633,24 +1790,56 @@ class ScanWorkspaceManager:
 
         # Step 1: Collect stream from scanner (or offline .rec / synthetic generator)
         if source_mode == "live":
+            # Long mode spools the wire stream straight to disk, so the capture
+            # phase holds no sheet-sized buffer at all.
+            spool_path = (
+                str(Path(self.settings.output_dir) / f"{scan_id}.spool") if long_mode else None
+            )
             cap = self.engine.run_live_scan(
                 width_inches=effective_width_in,
                 dpi=dpi,
                 seconds=seconds,
-                recover=True,
+                # Never move media automatically.  Recovery is a manual,
+                # operator-watched step: `unload` runs at full roller speed and
+                # tears long sheets (observed 2026-11-02).
+                recover=False,
                 post_scan_eject=self.settings.post_scan_eject,
+                spool_path=spool_path,
+                max_bytes=None if long_mode else self._max_single_pass_stream_bytes(),
                 cancel_event=cancel_event,
                 on_progress=lambda stg, info: self.broadcast_event(
                     "scan_progress", {"scan_id": scan_id, "stage": stg, **info}
                 ),
             )
             src_label = cap.source
+            if cap.abort_reason == "memory_budget":
+                # Stopped during collection: better a short capture and a clear
+                # message than an OOM kill during the stitch phase.
+                raise RuntimeError(
+                    f"Sheet is longer than this host can stitch in one pass "
+                    f"(stopped after {cap.rows:,} rows / {cap.rows / float(dpi):.0f} in). "
+                    "Enable Long document mode to spool and stitch it in bands, then "
+                    "recover the sheet by hand and start again. No stitching was "
+                    "attempted, so nothing ran out of memory."
+                )
             if cap.cancelled or cancel_event.is_set():
                 return self._build_cancelled_job(
                     scan_id=scan_id, source=src_label, width_inches=effective_width_in,
                     dpi=dpi, color_mode=chosen_color_mode, preset=preset,
                     rows=cap.rows, records_count=cap.records_count,
                     holes=cap.holes, t0=t0,
+                )
+            if long_mode:
+                return self._finish_long_scan(
+                    scan_id=scan_id,
+                    cap=cap,
+                    preset=preset,
+                    dpi=dpi,
+                    width_inches=effective_width_in,
+                    color_mode=chosen_color_mode,
+                    band_rows=band_rows,
+                    overlap_rows=overlap_rows,
+                    t0=t0,
                 )
             buf, _info = load_rec_concat_bytes(cap.raw_rec_bytes)
             raster, rows = to_raster_16bit(buf)
@@ -668,6 +1857,26 @@ class ScanWorkspaceManager:
                     scan_id=scan_id, source=src_label, width_inches=effective_width_in,
                     dpi=dpi, color_mode=chosen_color_mode, preset=preset,
                     rows=0, records_count=0, holes=0, t0=t0,
+                )
+            if long_mode:
+                # Same banded path as a live long scan, fed from a .rec: this is
+                # how an existing capture is reprocessed without the scanner.
+                from .banded import rec_to_spool
+
+                spool = str(Path(self.settings.output_dir) / f"{scan_id}.spool")
+                info = rec_to_spool(rec_path, spool)
+                cap.spool_path = spool
+                cap.rows = int(info["rows"])
+                return self._finish_long_scan(
+                    scan_id=scan_id,
+                    cap=cap,
+                    preset=preset,
+                    dpi=dpi,
+                    width_inches=effective_width_in,
+                    color_mode=chosen_color_mode,
+                    band_rows=band_rows,
+                    overlap_rows=overlap_rows,
+                    t0=t0,
                 )
             buf, _info = load_rec_concat_bytes(cap.raw_rec_bytes)
             raster, rows = to_raster_16bit(buf)
@@ -904,6 +2113,8 @@ class ScanWorkspaceManager:
 
     def _note_export_sequence(self, used_seq: int) -> None:
         """Advance ``settings.next_sequence_number`` past a number we just wrote."""
+        if not 0 < int(used_seq) <= MAX_SEQUENCE_NUMBER:
+            return
         if used_seq >= self.settings.next_sequence_number:
             self.settings.next_sequence_number = used_seq + 1
             self._save_settings(self.settings)
@@ -960,6 +2171,8 @@ class ScanWorkspaceManager:
             self._note_export_sequence(used_seq)
             job.exported = exported
             last = exported
+        if last is not None and self.settings.ocr_auto:
+            self.start_ocr(job.scan_id)
         return last
 
     def _get_active_stitch(self, job: ScanJob) -> StitchResult:
@@ -986,44 +2199,43 @@ class ScanWorkspaceManager:
             )
         return job._stitch_preset
 
-    @staticmethod
-    def _split_numbered_stem(stem: str) -> tuple[str, int, int]:
-        """``'CU-Kee_0087' -> ('CU-Kee', 87, 4)``; unnumbered names return seq 0."""
-        import re as _re
-
-        m = _re.match(r"^(.*?)[_-](\d+)$", stem)
-        if not m:
-            return stem, 0, 4
-        return m.group(1), int(m.group(2)), len(m.group(2))
-
     def _render_export_basename(self, job: ScanJob, render_mode: str, prefix_override: str | None = None) -> tuple[str, int]:
         """Filename base for one render variant of ``job``.
 
-        All variants of a scan share its allocated number (``CU-Kee_0087``,
-        ``CU-Kee_0087_Auto``, ``CU-Kee_0087_AI``); a variant is only moved to the
-        next number when that exact file already exists, so nothing is overwritten.
+        Every variant of a scan shares its allocated stem (``CU4KS_2610311512``,
+        ``..._Auto``, ``..._AI``).  A fresh number is allocated only when that
+        exact view is already on disk, so nothing is overwritten and the number
+        is never inferred from the filename.
         """
-        stem_prefix, seq, digits = self._split_numbered_stem(str(job.scan_id))
-        prefix = (prefix_override or "").strip() or stem_prefix
-        if digits < 1:
-            digits = 4
-        if seq <= 0:
-            candidate_stem, seq = find_free_export_group(
-                self.settings.output_dir,
-                prefix=prefix,
-                start_seq=self.settings.next_sequence_number,
-                digits=digits,
-            )
-            return f"{candidate_stem}{EXPORT_RENDER_SUFFIX.get(render_mode, '')}", seq
+        base = str(job.scan_id)
+        seq = int(self._scan_numbers.get(base, 0))
+        if not 0 < seq <= MAX_SEQUENCE_NUMBER:
+            seq = 0
+        digits = 4
+        if seq > 0:
+            marked = f"_{seq:0{digits}d}"
+            stem_prefix = base[: -len(marked)] if base.endswith(marked) else base
+        else:
+            stem_prefix = base
+
+        override = (prefix_override or "").strip()
+        if override:
+            # Re-exports keep the scan's timestamp: it is what makes the name
+            # unique, so a prefix override must not drop it.
+            safe = "".join(c if (c.isalnum() or c in "-_") else "_" for c in override).strip("_")
+            if safe:
+                stem_prefix = f"{safe}_{self._stamp_for(job)}"
+
+        suffix = EXPORT_RENDER_SUFFIX.get(render_mode, "")
+        if not export_variant_exists(self.settings.output_dir, base, render_mode):
+            return f"{base}{suffix}", seq or self.settings.next_sequence_number
+
+        start = seq + 1 if seq > 0 else clamp_sequence(self.settings.next_sequence_number)
         while True:
-            candidate_stem = render_export_stem(prefix, seq, digits)
-            if not export_variant_exists(self.settings.output_dir, candidate_stem, render_mode):
-                return f"{candidate_stem}{EXPORT_RENDER_SUFFIX.get(render_mode, '')}", seq
-            # That exact view is already on disk: take the next number that is free
-            # for every variant so the group stays aligned.
-            _next_stem, seq = find_free_export_group(
-                self.settings.output_dir, prefix=prefix, start_seq=seq + 1, digits=digits
+            candidate_stem, found = find_free_export_group(
+                self.settings.output_dir, prefix=stem_prefix, start_seq=start, digits=digits
             )
+            return f"{candidate_stem}{suffix}", found
 
     def resolve_drift_decision(
         self,
@@ -1291,6 +2503,8 @@ class ScanWorkspaceManager:
         self._note_export_sequence(used_seq)
         exported["render_mode"] = mode
         job.exported = exported
+        if self.settings.ocr_auto:
+            self.start_ocr(job.scan_id)
         return exported
 
     def save_debug_capture(self, scan_id: str, formats: list[str] | None = None) -> dict[str, Any]:
@@ -1395,6 +2609,12 @@ class ScanStartRequest(BaseModel):
     seam_blend_strength: float | None = None
     seam_feather_mode: str = "classic"
     seconds: float = 25.0
+    #: Long-document mode: spool the stream to disk and stitch in row bands, so
+    #: peak memory is one band instead of the whole sheet.  Required for sheets
+    #: longer than ~10 ft at 200 dpi; the single-pass path would be OOM-killed.
+    long_mode: bool = False
+    band_rows: int = 4000
+    overlap_rows: int = 200
     demo_rows: int = 960
     demo_paper_width_inches: float = 36.0
     filename_prefix: str | None = None
@@ -1444,6 +2664,26 @@ class EnhanceRequest(BaseModel):
     external_url: str = ""
     external_api_key: str = ""
     external_prompt: str = "Clean and enhance scan while preserving exact geometry and fine details."
+
+
+class RenamePresetRequest(BaseModel):
+    name: str
+
+
+class OcrRequest(BaseModel):
+    """Options for one OCR/vision/naming pass over the exported PDF."""
+
+    force: bool = False
+    image_only: bool | None = None  # True = skip the Tesseract pass
+    architectural: bool | None = None  # True = read the sheet title block
+    naming: str | None = None      # heuristic | llm | off
+    apply: str | None = None       # none | copy | rename
+    vision: str | None = None      # auto | always | never
+    language: str | None = None
+    max_pages: int | None = None
+    # One-off override of the Settings prompt; omitted keeps the saved setting.
+    prompt: str | None = None
+    wait: bool = True              # False -> background, returns immediately
 
 
 class ExportRequest(BaseModel):
@@ -1499,6 +2739,7 @@ def create_app(workspace: ScanWorkspaceManager | None = None) -> FastAPI:
             "paper_sizes": list(PAPER_SIZE_PRESETS.values()),
             "supported_resolutions_dpi": list(SUPPORTED_RESOLUTIONS_DPI),
             "available_rec_files": ws_mgr.list_available_rec_files(),
+            "build": {"commit": BUILD_COMMIT, "started_at": BUILD_STARTED_AT},
             "recent_scans": [
                 j.to_public_dict()
                 for j in sorted(ws_mgr.jobs.values(), key=lambda x: x.created_at, reverse=True)[:10]
@@ -1579,6 +2820,29 @@ def create_app(workspace: ScanWorkspaceManager | None = None) -> FastAPI:
         }
 
     # -- front panel -------------------------------------------------------
+    @app.get("/api/captures")
+    def api_list_captures() -> dict[str, Any]:
+        """Long-scan captures on disk, with free space and the retention count."""
+        caps = ws_mgr.list_captures()
+        try:
+            free = shutil.disk_usage(str(Path(ws_mgr.settings.output_dir))).free
+        except OSError:
+            free = None
+        return {
+            "captures": caps,
+            "keep": ws_mgr.settings.long_capture_keep,
+            "total_bytes": sum(c["size_bytes"] for c in caps),
+            "free_bytes": free,
+            "low_space": bool(free is not None and free < 20 * 1024**3),
+        }
+
+    @app.delete("/api/captures/{name}")
+    def api_delete_capture(name: str) -> dict[str, Any]:
+        try:
+            return ws_mgr.delete_capture(name)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
     @app.get("/api/panel/status")
     def api_panel_status() -> dict[str, Any]:
         return ws_mgr.panel.snapshot()
@@ -1597,6 +2861,68 @@ def create_app(workspace: ScanWorkspaceManager | None = None) -> FastAPI:
     def api_panel_led(req: PanelLedRequest) -> dict[str, Any]:
         """Drive the scan-ready LED. This WRITES to the scanner."""
         return ws_mgr.panel.set_ready_led(bool(req.on))
+
+
+    @app.patch("/api/presets/{preset_id}")
+    def api_rename_preset(preset_id: str, req: RenamePresetRequest) -> dict[str, Any]:
+        try:
+            preset = ws_mgr.preset_store.rename_preset(preset_id, req.name)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (ValueError, OSError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"preset": preset.to_dict()}
+
+    @app.delete("/api/presets/{preset_id}")
+    def api_delete_preset(preset_id: str) -> dict[str, Any]:
+        # Only a scan that is still capturing/deciding needs its preset.  A
+        # finished scan must not block cleaning up a broken preset; it is moved
+        # to the fallback preset instead.
+        active = [
+            job.scan_id
+            for job in ws_mgr.jobs.values()
+            if job.preset_id == preset_id
+            and job.status in ("scanning", "awaiting_drift_decision")
+        ]
+        if active:
+            raise HTTPException(
+                status_code=409,
+                detail=f"preset is in use by a running scan: {', '.join(active)}",
+            )
+
+        remaining = [
+            p.id for p in ws_mgr.preset_store.list_presets() if p.id != preset_id
+        ]
+        fallback = None
+        if "architectural-neutral" in remaining:
+            fallback = "architectural-neutral"
+        elif remaining:
+            fallback = remaining[0]
+
+        try:
+            deleted = ws_mgr.preset_store.delete_preset(preset_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Preset not found")
+
+        reassigned = []
+        if fallback:
+            for job in ws_mgr.jobs.values():
+                if job.preset_id == preset_id:
+                    job.preset_id = fallback
+                    reassigned.append(job.scan_id)
+        if ws_mgr.settings.active_preset_id == preset_id and fallback:
+            ws_mgr.settings.active_preset_id = fallback
+            ws_mgr._save_settings(ws_mgr.settings)
+        return {
+            "deleted": preset_id,
+            "active_preset_id": ws_mgr.settings.active_preset_id,
+            "reassigned_scans": reassigned,
+            "presets": [p.id for p in ws_mgr.preset_store.list_presets()],
+        }
 
     @app.post("/api/presets/{preset_id}/rollback")
     def api_rollback_preset(preset_id: str) -> dict[str, Any]:
@@ -1628,6 +2954,9 @@ def create_app(workspace: ScanWorkspaceManager | None = None) -> FastAPI:
                 seam_blend_strength=req.seam_blend_strength,
                 seam_feather_mode=req.seam_feather_mode,
                 seconds=req.seconds,
+                long_mode=req.long_mode,
+                band_rows=req.band_rows,
+                overlap_rows=req.overlap_rows,
                 demo_rows=req.demo_rows,
                 demo_paper_width_inches=req.demo_paper_width_inches,
                 filename_prefix=req.filename_prefix,
@@ -1727,6 +3056,41 @@ def create_app(workspace: ScanWorkspaceManager | None = None) -> FastAPI:
                 "next_sequence_number": ws_mgr.settings.next_sequence_number,
                 "filename_prefix": ws_mgr.settings.filename_prefix,
             }
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+    @app.get("/api/ocr/status")
+    def api_ocr_status() -> dict[str, Any]:
+        return ws_mgr.ocr_status()
+
+    @app.post("/api/scans/{scan_id}/ocr")
+    def api_ocr_scan(scan_id: str, req: OcrRequest) -> dict[str, Any]:
+        overrides = {
+            "naming": req.naming,
+            "apply": req.apply,
+            "vision": req.vision,
+            "language": req.language,
+            "max_pages": req.max_pages,
+        }
+        if req.prompt is not None:
+            # An explicit empty string means "use the module default" for this
+            # one pass; omitting the field keeps the saved setting.
+            overrides["prompt"] = normalize_vision_prompt(req.prompt)
+        try:
+            if not req.wait:
+                return {
+                    "started": ws_mgr.start_ocr(scan_id),
+                    "scan_id": scan_id,
+                    "note": "poll /api/scans/{scan_id} for the ocr result",
+                }
+            return ws_mgr.ocr_scan(
+                scan_id,
+                force=req.force,
+                image_only=req.image_only,
+                architectural=req.architectural,
+                **overrides,
+            )
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 

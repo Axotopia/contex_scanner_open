@@ -1,6 +1,6 @@
 """The 28-byte ``SCSISENSE`` status record.
 
-Layout (verified against live wire captures (SPECS.md §2.2))::
+Layout (``SPECS.md`` §2.2, verified against ``CtxScan64.dll`` FUN_18006ffd0)::
 
     0..8    ASCII "SCSISENSE"
     9       SCSI status          0x00 GOOD, 0x02 CHECK CONDITION, 0x18 RESERVATION CONFLICT

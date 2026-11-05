@@ -105,6 +105,10 @@ function toggleAccordion(boxId) {
 let appState = {
   settings: {},
   settingsLoaded: false,
+  // True while the Settings vision-prompt editor has unsaved keystrokes, so a
+  // background /api/ocr/status refresh can't overwrite what is being typed.
+  visionPromptDirty: false,
+  ocrStatus: null,
   presets: [],
   availableRecs: [],
   paperSizes: [],
@@ -150,6 +154,7 @@ async function refreshStatus() {
     appState.availableRecs = data.available_rec_files || [];
     appState.paperSizes = data.paper_sizes || [];
 
+    appState.build = data.build || null;
     updateHardwareHeader(data.hardware || {});
     populatePresetsDropdown();
     populateRecsDropdown();
@@ -177,7 +182,7 @@ function setPillText(el, text, className) {
 
 function updateHardwareHeader(hw) {
   const ipEl = document.getElementById("hw-ip");
-  if (ipEl) ipEl.textContent = `IP: ${hw.host || appState.settings.scanner_ip || "0.0.0.0"}`;
+  if (ipEl) ipEl.textContent = `IP: ${hw.host || appState.settings.scanner_ip || "10.10.80.40"}`;
   const modelEl = document.getElementById("hw-model");
   if (modelEl) modelEl.textContent = `Model: ${hw.model || "HD Ultra i4250s"}`;
   const snEl = document.getElementById("hw-serial");
@@ -209,7 +214,8 @@ function populatePresetsDropdown() {
   for (const p of appState.presets) {
     const opt = document.createElement("option");
     opt.value = p.id;
-    opt.textContent = `${p.name} (dE ${p.dE76_mean ?? "—"})`;
+    const dE = p.dE76_mean ?? (p.it8 && p.it8.dE76_mean);
+    opt.textContent = `${p.name} (dE ${dE == null ? "—" : Number(dE).toFixed(2)})`;
     if (p.id === appState.settings.active_preset_id) {
       opt.selected = true;
     }
@@ -288,8 +294,55 @@ function syncScanForm() {
   setSelectValue("scan-dpi", s.scan_dpi || 300);
   setSelectValue("scan-color-mode", s.scan_color_mode || "color");
   setSelectValue("scan-feather-mode", s.seam_feather_mode || "classic");
+  const longEl = document.getElementById("scan-long-mode");
+  if (longEl) longEl.checked = !!s.scan_long_mode;
+  const bandEl = document.getElementById("scan-band-rows");
+  if (bandEl && s.scan_band_rows) bandEl.value = String(s.scan_band_rows);
+  const fmtEl = document.getElementById("scan-long-format");
+  if (fmtEl) {
+    fmtEl.value = s.long_out_format === "auto" ? "auto-single"
+      : s.long_out_format === "tiff" ? "tiff-single"
+      : (s.long_single_file ? "jpg-single" : "jpg-parts");
+  }
+  const keepEl = document.getElementById("scan-capture-keep");
+  if (keepEl && s.long_capture_keep !== undefined) keepEl.value = String(s.long_capture_keep);
+  refreshCaptures();
   appState.orientation = s.scan_orientation === "landscape" ? "landscape" : "portrait";
   onSourceChange();
+}
+
+async function refreshCaptures() {
+  const box = document.getElementById("long-captures");
+  if (!box) return;
+  try {
+    const res = await fetch("/api/captures");
+    if (!res.ok) return;
+    const data = await res.json();
+    const caps = data.captures || [];
+    const gb = (n) => (n / 1e9).toFixed(2) + " GB";
+    const free = data.free_bytes ? gb(data.free_bytes) : "?";
+    if (!caps.length) {
+      box.innerHTML = `<span class="muted">No saved captures · ${free} free</span>`;
+      return;
+    }
+    const rows = caps.map((c) => `
+      <div class="capture-row">
+        <span title="${c.path}">${c.name} · ${gb(c.size_bytes)} · ${(c.rows || 0).toLocaleString()} rows · ${c.modified_at}</span>
+        <button class="link-btn" onclick="deleteCapture('${c.name}')">delete</button>
+      </div>`).join("");
+    const warn = data.low_space
+      ? `<div class="capture-warn">Only ${free} free — consider deleting captures before the next long scan.</div>`
+      : "";
+    box.innerHTML = `${warn}<div class="muted">${caps.length} capture(s), ${gb(data.total_bytes)} · keep newest ${data.keep} · ${free} free</div>${rows}`;
+  } catch (e) { /* the list is optional; never block a scan on it */ }
+}
+
+async function deleteCapture(name) {
+  try {
+    await fetch(`/api/captures/${encodeURIComponent(name)}`, { method: "DELETE" });
+  } finally {
+    refreshCaptures();
+  }
 }
 
 async function persistScanSettings() {
@@ -306,6 +359,17 @@ async function persistScanSettings() {
     scan_dpi: parseInt(document.getElementById("scan-dpi").value || "300", 10),
     scan_color_mode: document.getElementById("scan-color-mode").value,
     seam_feather_mode: document.getElementById("scan-feather-mode").value || "classic",
+    // Persist the whole seam group together: leaving the toggle/width/strength
+    // out meant half of "Advanced Seam Tuning" silently reset on every reload.
+    seam_color_blend_enabled: !!document.getElementById("scan-seam-blend")?.checked,
+    seam_blend_width_px: Math.max(16, Math.min(1024, parseInt(document.getElementById("scan-blend-width")?.value || "128", 10) || 128)),
+    seam_blend_strength: Math.max(0.10, Math.min(1.0, (parseFloat(document.getElementById("scan-blend-strength")?.value || "85") || 85) / 100.0)),
+    scan_long_mode: !!document.getElementById("scan-long-mode")?.checked,
+    scan_band_rows: Math.max(500, Math.min(20000, parseInt(document.getElementById("scan-band-rows")?.value || "4000", 10) || 4000)),
+    long_out_format: (() => { const v = document.getElementById("scan-long-format")?.value || "auto-single";
+      return v.startsWith("auto") ? "auto" : v.startsWith("tiff") ? "tiff" : "jpg"; })(),
+    long_single_file: (document.getElementById("scan-long-format")?.value || "auto-single") !== "jpg-parts",
+    long_capture_keep: Math.max(0, Math.min(10, parseInt(document.getElementById("scan-capture-keep")?.value || "1", 10) || 0)),
     active_preset_id:
       document.getElementById("scan-preset").value || appState.settings.active_preset_id,
   };
@@ -347,30 +411,31 @@ function onPaperSizeChange() {
     b.classList.toggle("active", b.dataset.orientation === appState.orientation);
   });
 
+  const paperLabel = document.getElementById("paper-size-label");
   if (ps === "custom") {
     widthInput.disabled = false;
-    hint.textContent = "Custom cross-feed width (4.0–42.0 in); the scanner feeds to the end of the sheet. Orientation is not used for a custom width.";
+    widthInput.style.display = "inline-block";
+    if (paperLabel) {
+      const val = parseFloat(widthInput.value || "42.0");
+      paperLabel.textContent = `Paper Size / Auto-Width [ Feed Width ${fmtInches(val)}" ]`;
+    }
+    if (hint) hint.textContent = "";
   } else if (ps === "auto") {
     widthInput.disabled = true;
+    widthInput.style.display = "none";
     widthInput.value = "42.0";
-    hint.textContent = "Auto-detect chooses the window width after the scan; orientation is not used.";
+    if (paperLabel) paperLabel.textContent = 'Paper Size / Auto-Width [ Feed Width Auto (42.0") ]';
+    if (hint) hint.textContent = "";
   } else {
     widthInput.disabled = true;
+    widthInput.style.display = "none";
     const portraitIn = info ? Number(info.width_in) : (PAPER_WIDTH_FALLBACK[ps] || 42.0);
     const longIn = info && info.long_in ? Number(info.long_in) : portraitIn;
     const landscapeIn = Math.min(MAX_SCAN_WIDTH_IN, longIn);
     const width = appState.orientation === "landscape" && canOrient ? landscapeIn : portraitIn;
     widthInput.value = fmtInches(width);
-    if (canOrient) {
-      hint.textContent =
-        `Cross-feed width: ${fmtInches(width)} in · portrait ${fmtInches(portraitIn)} in / ` +
-        `landscape ${fmtInches(landscapeIn)} in` +
-        (appState.orientation === "landscape" && longIn > MAX_SCAN_WIDTH_IN
-          ? " (landscape clamped to the 42 in bed)"
-          : "");
-    } else {
-      hint.textContent = `Cross-feed width: ${fmtInches(width)} in · full sensor width, orientation is not used.`;
-    }
+    if (paperLabel) paperLabel.textContent = `Paper Size / Auto-Width [ Feed Width ${fmtInches(width)}" ]`;
+    if (hint) hint.textContent = "";
   }
   setShown(demoPaperField, ps === "auto" && src.startsWith("demo_"), true);
 }
@@ -388,21 +453,25 @@ function toggleExternalAi() {
 }
 
 function toggleScanSeamBlendControls() {
-  appState.scanSeamBlendUserSet = true;
   const enabled = document.getElementById("scan-seam-blend").checked;
   setShown(document.getElementById("scan-seam-blend-controls"), enabled, true);
 }
 
-function onScanBlendAdjustChange() {
-  const w = parseInt(document.getElementById("scan-blend-width").value || "128", 10);
-  const s = parseInt(document.getElementById("scan-blend-strength").value || "85", 10);
-  document.getElementById("scan-blend-width-lbl").textContent = `±${w} px`;
-  document.getElementById("scan-blend-str-lbl").textContent = `${s}%`;
+// Scan Setup is the single owner of the analog seam blend now that the
+// duplicate in AI & Enhance is gone, so the toggle persists here.
+function onScanSeamBlendToggle() {
+  appState.scanSeamBlendUserSet = true;
+  toggleScanSeamBlendControls();
+  persistScanSettings();
 }
 
-function toggleAiSeamBlendControls() {
-  const enabled = document.getElementById("ai-blend-seam-colors").checked;
-  setShown(document.getElementById("ai-seam-blend-controls"), enabled, true);
+function onScanBlendAdjustChange() {
+  const w = parseInt(document.getElementById("scan-blend-width")?.value || "128", 10);
+  const s = parseInt(document.getElementById("scan-blend-strength")?.value || "85", 10);
+  const wLbl = document.getElementById("scan-blend-width-lbl");
+  const sLbl = document.getElementById("scan-blend-str-lbl");
+  if (wLbl) wLbl.textContent = `±${w} px`;
+  if (sLbl) sLbl.textContent = `${s}%`;
 }
 
 function toggleAiMicroFeatherControls() {
@@ -410,13 +479,14 @@ function toggleAiMicroFeatherControls() {
   setShown(document.getElementById("ai-micro-feather-controls"), enabled, true);
 }
 
+// AI & Enhance owns only the micro-feather radius now; the analog seam blend
+// moved to Scan Setup.  The old ai-blend-* controls are gone, so this must not
+// assume they exist -- it used to read them unconditionally and throw, which
+// aborted refreshStatus() before the scan form and last scan could load.
 function onAiBlendAdjustChange() {
-  const w = parseInt(document.getElementById("ai-blend-width").value || "128", 10);
-  const s = parseInt(document.getElementById("ai-blend-strength").value || "85", 10);
-  const r = parseInt(document.getElementById("ai-seam-radius").value || "6", 10);
-  document.getElementById("ai-blend-width-lbl").textContent = `±${w} px`;
-  document.getElementById("ai-blend-str-lbl").textContent = `${s}%`;
-  document.getElementById("ai-seam-radius-lbl").textContent = `±${r} px`;
+  const r = parseInt(document.getElementById("ai-seam-radius")?.value || "6", 10);
+  const lbl = document.getElementById("ai-seam-radius-lbl");
+  if (lbl) lbl.textContent = `±${r} px`;
 }
 
 function setPipelineStep(activeStep, statusText) {
@@ -567,6 +637,11 @@ async function startScan() {
     seam_blend_width_px: parseInt(document.getElementById("scan-blend-width").value || "128", 10),
     seam_blend_strength: parseFloat(document.getElementById("scan-blend-strength").value || "85") / 100.0,
     seam_feather_mode: document.getElementById("scan-feather-mode").value || "classic",
+    // Long sheets: spool to disk + stitch in bands instead of holding the whole
+    // sheet in RAM.  The read window is widened server-side when this is on.
+    long_mode: !!document.getElementById("scan-long-mode")?.checked,
+    band_rows: Math.max(500, Math.min(20000, parseInt(document.getElementById("scan-band-rows")?.value || "4000", 10) || 4000)),
+    seconds: !!document.getElementById("scan-long-mode")?.checked ? 1800 : 25,
     demo_paper_width_inches: parseFloat(document.getElementById("demo-paper-width").value || "36.0"),
     filename_prefix: document.getElementById("export-prefix").value.trim() || "scan",
   };
@@ -1253,10 +1328,14 @@ async function runAiEnhance(autoRun = false) {
                   "Equalizing analog seams, micro-inpainting & shadow denoise", "✨");
 
   const useExt = document.getElementById("ai-external").checked;
+  // AI & Enhance never re-blends the analog seams: Scan Setup already feathered
+  // them inside the scan pipeline, and running the same algorithm on top of
+  // already-blended pixels only blurs the joins.  The width/strength are still
+  // sent because the server reports them next to the before/after seam metrics.
   const payload = {
-    blend_seam_colors: document.getElementById("ai-blend-seam-colors").checked,
-    seam_blend_width_px: parseInt(document.getElementById("ai-blend-width").value || "128", 10),
-    seam_blend_strength: parseFloat(document.getElementById("ai-blend-strength").value || "85") / 100.0,
+    blend_seam_colors: false,
+    seam_blend_width_px: parseInt(document.getElementById("scan-blend-width")?.value || "128", 10) || 128,
+    seam_blend_strength: (parseFloat(document.getElementById("scan-blend-strength")?.value || "85") || 85) / 100.0,
     seam_feather_mode: appState.settings.seam_feather_mode || "classic",
     heal_seams: document.getElementById("ai-heal-seams").checked,
     seam_radius_px: parseInt(document.getElementById("ai-seam-radius").value || "6", 10),
@@ -1356,13 +1435,17 @@ async function persistSetting(payload) {
 }
 
 async function onDriftPolicyChange() {
-  const el = document.getElementById("scan-drift-policy");
-  if (!el) return;
-  const ok = await persistSetting({ drift_policy: el.value });
+  const chk = document.getElementById("scan-drift-enabled");
+  const actionSel = document.getElementById("scan-drift-action");
+  if (!chk) return;
+  const isEnabled = chk.checked;
+  if (actionSel) actionSel.disabled = !isEnabled;
+  const policy = !isEnabled ? "disabled" : (actionSel ? actionSel.value : "prompt");
+  const ok = await persistSetting({ drift_policy: policy });
   if (ok) {
-    setPipelineStep(1, el.value === "disabled"
+    setPipelineStep(1, !isEnabled
       ? "Colour / temperature drift check is off"
-      : `Colour / temperature drift check: ${el.value === "auto_adjust" ? "auto-correct" : "ask"}`);
+      : `Colour / temperature drift check: ${policy === "auto_adjust" ? "auto-correct" : "ask"}`);
   }
 }
 
@@ -1776,6 +1859,12 @@ function renderCanvas() {
 // Settings & Preset Helpers
 // ---------------------------------------------------------------------------
 
+function scanStamp(date = new Date()) {
+  const p = (n) => String(n).padStart(2, "0");
+  return `${p(date.getFullYear() % 100)}${p(date.getMonth() + 1)}${p(date.getDate())}` +
+    `${p(date.getHours())}${p(date.getMinutes())}`;
+}
+
 function updateNextFilenamePreview() {
   const rawPrefix = (document.getElementById("export-prefix").value || "scan").trim();
   const safePrefix = rawPrefix.replace(/[^A-Za-z0-9_-]+/g, "_") || "scan";
@@ -1784,7 +1873,19 @@ function updateNextFilenamePreview() {
   const el = document.getElementById("next-file-preview");
   if (!el) return;
   const valueEl = el.querySelector("strong");
-  const value = `${safePrefix}_${padded}`;
+  const prefixOn = document.getElementById("prefix-enabled");
+  const includePrefix = !prefixOn || prefixOn.checked;
+  const prefixInput = document.getElementById("export-prefix");
+  if (prefixInput) prefixInput.disabled = !includePrefix;
+  // Mirrors the server's allocation: [prefix_]YYMMDDHHMM[_NNNN].  The timestamp
+  // is always present; the number only when auto-numbering is on.
+  const numOn = document.getElementById("auto-number-enabled");
+  const includeNumber = !numOn || numOn.checked;
+  const parts = [];
+  if (includePrefix) parts.push(safePrefix);
+  parts.push(scanStamp());
+  if (includeNumber) parts.push(padded);
+  const value = parts.join("_");
   if (valueEl) {
     // The card markup owns the label; only the filename is dynamic.
     valueEl.textContent = value;
@@ -1794,13 +1895,53 @@ function updateNextFilenamePreview() {
   }
 }
 
+
+function onOcrAutoChange() {
+  const ocr = document.getElementById("ocr-auto");
+  const autosave = document.getElementById("autosave-enabled");
+  if (ocr && ocr.checked && autosave) autosave.checked = true;
+  persistOutputSettings();
+}
+
+function resetAutoNumber() {
+  const seq = document.getElementById("export-next-seq");
+  if (seq) seq.value = 1;
+  updateNextFilenamePreview();
+  persistOutputSettings();
+}
+
+function onAutoNumberChange() {
+  persistOutputSettings();
+}
+
+function onPrefixEnabledChange() {
+  updateNextFilenamePreview();
+  persistOutputSettings();
+}
+
+function onAutosaveChange() {
+  const ocr = document.getElementById("ocr-auto");
+  const autosave = document.getElementById("autosave-enabled");
+  if (autosave && !autosave.checked && ocr) ocr.checked = false;
+  persistOutputSettings();
+}
+
 function currentOutputPayload(overrides = {}) {
   const prefix = (document.getElementById("export-prefix").value || "scan").trim() || "scan";
   const seq = Math.max(1, parseInt(document.getElementById("export-next-seq").value || "1", 10) || 1);
   const outputDir = (document.getElementById("export-output-dir").value || "").trim();
   const formats = selectedExportFormats();
+  const ocrAuto = document.getElementById("ocr-auto");
+  const autoNumber = document.getElementById("auto-number-enabled");
+  const prefixEnabled = document.getElementById("prefix-enabled");
   return {
     autosave_enabled: document.getElementById("autosave-enabled").checked,
+    ocr_auto: ocrAuto ? ocrAuto.checked : false,
+    // ocr_naming / ocr_vision / ocr_image_only / ocr_architectural are derived
+    // server-side by the naming pass, and ocr_cleanup / ocr_apply are policy.
+    // Sending none of them keeps stale values from governing a rename.
+    filename_prefix_enabled: prefixEnabled ? prefixEnabled.checked : true,
+    auto_number_enabled: autoNumber ? autoNumber.checked : true,
     filename_prefix: prefix,
     next_sequence_number: seq,
     output_dir: outputDir,
@@ -1868,12 +2009,65 @@ function syncOutputDock() {
   if (fmtJpg) fmtJpg.checked = exportFormats.includes("jpg");
   if (fmtPdf) fmtPdf.checked = exportFormats.includes("pdf");
 
+  const ocrAuto = document.getElementById("ocr-auto");
+  if (ocrAuto && document.activeElement !== ocrAuto) ocrAuto.checked = !!s.ocr_auto;
+  const autoNumber = document.getElementById("auto-number-enabled");
+  if (autoNumber && document.activeElement !== autoNumber) {
+    autoNumber.checked = s.auto_number_enabled !== false;
+  }
+  const prefixEnabled = document.getElementById("prefix-enabled");
+  if (prefixEnabled && document.activeElement !== prefixEnabled) {
+    prefixEnabled.checked = s.filename_prefix_enabled !== false;
+  }
+  loadOcrStatus();
+
   const formatNote = document.getElementById("export-format-note");
   if (formatNote) {
     formatNote.textContent =
       `Autosave and Save / Export will write ${exportFormats.map((f) => f.toUpperCase()).join(", ")}.`;
   }
   updateNextFilenamePreview();
+}
+
+
+// -- OCR module status -------------------------------------------------------
+
+let ocrStatusLoaded = false;
+// The OCR card is gone, so the module's state only surfaces when something is
+// actually wrong.  The build identity rides along in Settings.
+async function loadOcrStatus() {
+  const alert = document.getElementById("ocr-alert");
+  const buildLine = document.getElementById("ocr-build-line");
+  if (buildLine) {
+    const b = appState.build || {};
+    buildLine.textContent = `Build ${b.commit || "unknown"} · started ${b.started_at || "unknown"}`;
+  }
+  if (!alert) return;
+  try {
+    const res = await fetch("/api/ocr/status");
+    const status = await res.json();
+    ocrStatusLoaded = true;
+    appState.ocrStatus = status;
+    // The module owns the default description prompt; Settings shows it.
+    syncVisionPromptField();
+    if (!status.available) {
+      alert.textContent = `Auto describe unavailable — ${status.reason || "OCR module not found"}`;
+      alert.title = status.reason || "";
+      alert.style.display = "";
+      return;
+    }
+    const vision = status.vision || {};
+    if (vision.ready === false) {
+      alert.textContent = "Auto describe: vision model offline — scans will save without a description.";
+      alert.title = vision.message || "";
+      alert.style.display = "";
+      return;
+    }
+    alert.style.display = "none";
+  } catch (err) {
+    alert.textContent = `Auto describe: status unavailable (${err.message})`;
+    alert.style.display = "";
+  }
 }
 
 // -- Output directory browser ------------------------------------------------
@@ -1991,60 +2185,125 @@ function setJpegQualityValue(value) {
   sel.value = String(q);
 }
 
+// -- Vision description prompt (Settings) ------------------------------------
+// The operator's custom text overrides the OCR module's DESCRIBE_PROMPT.  The
+// saved value is empty when the built-in default is in use, so module updates
+// keep flowing; the editor always shows the effective prompt.
+
+function visionPromptDefault() {
+  const status = appState.ocrStatus || {};
+  const vision = status.vision || {};
+  return String(vision.describe_prompt || "").trim();
+}
+
+function savedVisionPrompt() {
+  const s = appState.settings || {};
+  return String(s.ocr_vision_prompt || "").trim();
+}
+
+function syncVisionPromptField(force = false) {
+  const el = document.getElementById("set-ocr-vision-prompt");
+  if (!el) return;
+  if (!force && appState.visionPromptDirty) return;
+  el.value = savedVisionPrompt() || visionPromptDefault();
+  updateVisionPromptState();
+}
+
+function updateVisionPromptState() {
+  const el = document.getElementById("set-ocr-vision-prompt");
+  const state = document.getElementById("set-ocr-vision-prompt-state");
+  if (!el || !state) return;
+  const def = visionPromptDefault();
+  const current = el.value.trim();
+  if (!def) {
+    const available = !!(appState.ocrStatus && appState.ocrStatus.available);
+    state.textContent = available
+      ? "This OCR module doesn't report a default prompt; update the module to use this text."
+      : "The OCR module is offline, so the default prompt can't be displayed.";
+    return;
+  }
+  state.textContent = (!current || current === def)
+    ? "Using the built-in default."
+    : "Customized — the model follows this text instead of the default.";
+}
+
+function onVisionPromptInput() {
+  appState.visionPromptDirty = true;
+  updateVisionPromptState();
+}
+
+function resetVisionPromptToDefault() {
+  const el = document.getElementById("set-ocr-vision-prompt");
+  if (!el) return;
+  el.value = visionPromptDefault();
+  appState.visionPromptDirty = true;
+  updateVisionPromptState();
+  el.focus();
+}
+
 function syncSettingsForm() {
   const s = appState.settings;
-  document.getElementById("set-scanner-ip").value = s.scanner_ip || "0.0.0.0";
+  document.getElementById("set-scanner-ip").value = s.scanner_ip || "10.10.80.40";
   document.getElementById("set-scanner-serial").value = s.scanner_serial || "UNKNOWN";
   document.getElementById("set-drift-policy").value = s.drift_policy || "prompt";
-  const scanDrift = document.getElementById("scan-drift-policy");
-  if (scanDrift) scanDrift.value = s.drift_policy || "prompt";
+  const driftChk = document.getElementById("scan-drift-enabled");
+  const driftAction = document.getElementById("scan-drift-action");
+  const policy = s.drift_policy || "prompt";
+  if (driftChk) driftChk.checked = policy !== "disabled";
+  if (driftAction) {
+    driftAction.value = policy === "auto_adjust" ? "auto_adjust" : "prompt";
+    driftAction.disabled = policy === "disabled";
+  }
   const autoAi = document.getElementById("ai-auto-enhance");
   if (autoAi) autoAi.checked = !!s.auto_ai_enhance;
   document.getElementById("set-eject-mode").value = s.post_scan_eject || "hold";
   setJpegQualityValue(s.jpg_quality != null ? s.jpg_quality : 95);
-  document.getElementById("set-auto-number").checked = s.auto_number_enabled !== false;
   document.getElementById("set-tiff-16bit").checked = !!s.tiff_16bit;
   document.getElementById("set-debug-mode").checked = !!s.debug_mode;
 
+  // Scan Setup owns the seam blend (the duplicate in this modal was removed), so
+  // seed the dock from settings only until the operator changes it -- otherwise a
+  // status poll would clobber a mid-session adjustment.
   const seamEnabled = s.seam_color_blend_enabled !== false;
   const seamWidth = s.seam_blend_width_px || 128;
   const seamStrengthPct = Math.round((s.seam_blend_strength != null ? s.seam_blend_strength : 0.85) * 100);
-  document.getElementById("set-seam-blend-enabled").checked = seamEnabled;
-  document.getElementById("set-seam-blend-width").value = seamWidth;
-  document.getElementById("set-seam-blend-strength").value = seamStrengthPct;
-
   if (!appState.scanSeamBlendUserSet) {
-    document.getElementById("scan-seam-blend").checked = seamEnabled;
+    const blend = document.getElementById("scan-seam-blend");
+    if (blend) blend.checked = seamEnabled;
+    const widthEl = document.getElementById("scan-blend-width");
+    if (widthEl) widthEl.value = seamWidth;
+    const strengthEl = document.getElementById("scan-blend-strength");
+    if (strengthEl) strengthEl.value = seamStrengthPct;
   }
-  document.getElementById("scan-blend-width").value = seamWidth;
-  document.getElementById("scan-blend-strength").value = seamStrengthPct;
   toggleScanSeamBlendControls();
   onScanBlendAdjustChange();
-
-  document.getElementById("ai-blend-seam-colors").checked = seamEnabled;
-  document.getElementById("ai-blend-width").value = seamWidth;
-  document.getElementById("ai-blend-strength").value = seamStrengthPct;
-  toggleAiSeamBlendControls();
   onAiBlendAdjustChange();
 
   document.getElementById("set-photocraft-url").value = s.photocraft_url || "";
   document.getElementById("set-photocraft-key").value = s.photocraft_api_key || "";
+  syncVisionPromptField();
   syncOutputDock();
 }
 
 async function saveSettings() {
+  const promptEl = document.getElementById("set-ocr-vision-prompt");
+  const promptText = promptEl ? promptEl.value.trim() : "";
+  const promptDefault = visionPromptDefault();
+  // Saving the default verbatim clears the override, so a later module default
+  // (or a reset) still applies instead of freezing today's text.
+  const visionPrompt = (!promptText || (promptDefault && promptText === promptDefault))
+    ? ""
+    : promptText;
+
   const payload = {
     scanner_ip: document.getElementById("set-scanner-ip").value.trim(),
     scanner_serial: document.getElementById("set-scanner-serial").value.trim(),
     drift_policy: document.getElementById("set-drift-policy").value,
     post_scan_eject: document.getElementById("set-eject-mode").value,
-    seam_color_blend_enabled: document.getElementById("set-seam-blend-enabled").checked,
-    seam_blend_width_px: Math.max(8, Math.min(1024, parseInt(document.getElementById("set-seam-blend-width").value || "128", 10))),
-    seam_blend_strength: Math.max(0.05, Math.min(1.0, parseFloat(document.getElementById("set-seam-blend-strength").value || "85") / 100.0)),
-    auto_number_enabled: document.getElementById("set-auto-number").checked,
     tiff_16bit: document.getElementById("set-tiff-16bit").checked,
     jpg_quality: Math.max(1, Math.min(100, parseInt(document.getElementById("set-jpg-quality").value || "95", 10))),
     debug_mode: document.getElementById("set-debug-mode").checked,
+    ocr_vision_prompt: visionPrompt,
     photocraft_url: document.getElementById("set-photocraft-url").value.trim(),
     photocraft_api_key: document.getElementById("set-photocraft-key").value.trim(),
   };
@@ -2054,8 +2313,53 @@ async function saveSettings() {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
+  appState.visionPromptDirty = false;
   closeModal("settings-modal");
   refreshStatus();
+}
+
+
+async function renameActivePreset() {
+  const sel = document.getElementById("scan-preset");
+  const presetId = sel.value;
+  const current = (appState.presets || []).find((p) => p.id === presetId);
+  const name = prompt("New preset name:", current ? current.name : presetId);
+  if (name === null) return;
+  const res = await fetch(`/api/presets/${encodeURIComponent(presetId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try { detail = (await res.json()).detail || detail; } catch (_) {}
+    alert(`Could not rename preset: ${detail}`);
+    return;
+  }
+  await refreshStatus();
+}
+
+async function deleteActivePreset() {
+  const sel = document.getElementById("scan-preset");
+  const presetId = sel.value;
+  const current = (appState.presets || []).find((p) => p.id === presetId);
+  const label = current ? current.name : presetId;
+  if (!confirm(`Delete preset "${label}" and its .bak backups? This cannot be undone.`)) return;
+  const res = await fetch(`/api/presets/${encodeURIComponent(presetId)}`, { method: "DELETE" });
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try { detail = (await res.json()).detail || detail; } catch (_) {}
+    alert(`Could not delete preset: ${detail}`);
+    return;
+  }
+  const body = await res.json().catch(() => ({}));
+  if (Array.isArray(body.reassigned_scans) && body.reassigned_scans.length) {
+    alert(
+      `Preset deleted. Finished scan(s) ${body.reassigned_scans.join(", ")} ` +
+      `were moved to '${body.active_preset_id || "the fallback preset"}'.`
+    );
+  }
+  await refreshStatus();
 }
 
 async function rollbackActivePreset() {
@@ -2074,6 +2378,12 @@ function openModal(id) {
   if (id === "wizard-modal") {
     onWizardAutoAlignChange();
     loadWizardPreview();
+  }
+  if (id === "settings-modal") {
+    // Start each visit from the saved value, then refresh the module default.
+    appState.visionPromptDirty = false;
+    syncVisionPromptField(true);
+    loadOcrStatus();
   }
 }
 
@@ -2097,6 +2407,7 @@ function connectWebSocket() {
           generating_demo_stream: 2,
           analyzing_color_drift: 3,
           stitching_cameras: 4,
+          band_stitch: 4,
         };
         const stageLabels = {
           connecting: "Connecting to scanner…",
@@ -2109,6 +2420,10 @@ function connectWebSocket() {
           generating_demo_stream: "Generating demo stream…",
           analyzing_color_drift: "Checking colour / temperature drift…",
           stitching_cameras: "Stitching cameras…",
+          band_stitch: msg.band
+            ? `Stitching band ${msg.band} — ${msg.inches_done || 0} in of ${(msg.rows_total || 0) ? Math.round((msg.rows_total || 0) / (msg.dpi || 200)) : "?"} in…`
+            : "Stitching long document in bands…",
+          over_budget: "Sheet too long for a single pass — stopping before stitching…",
           cancelled: "Cancelling…",
         };
         const label = stageLabels[msg.stage] || `Scanning (${msg.stage})…`;
@@ -2119,6 +2434,7 @@ function connectWebSocket() {
         stopScanActivity();
         loadJobIntoUI(msg, true);
         refreshStatus();
+        refreshCaptures();
       } else if (msg.type === "scan_cancelled" && msg.scan_id) {
         hideCancelButton();
         stopScanActivity();

@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="Contex Studio">
+  <defs>
+    <linearGradient id="frameGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="50%" stop-color="#6366f1"/>
+      <stop offset="100%" stop-color="#ec4899"/>
+    </linearGradient>
+    <linearGradient id="beamGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.05"/>
+      <stop offset="50%" stop-color="#38bdf8" stop-opacity="1"/>
+      <stop offset="100%" stop-color="#818cf8" stop-opacity="0.05"/>
+    </linearGradient>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0e1524"/>
+      <stop offset="100%" stop-color="#070b14"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="8" y="8" width="240" height="240" rx="48" fill="url(#bgGrad)" stroke="#1e293b" stroke-width="2"/>
+
+  <!-- aperture hexagon -->
+  <polygon points="128,44 200,86 200,170 128,212 56,170 56,86"
+           fill="rgba(14,21,36,0.55)" stroke="url(#frameGrad)" stroke-width="9" stroke-linejoin="round"/>
+
+  <!-- next chevrons -->
+  <path d="M104 100L136 128L104 156" fill="none" stroke="#38bdf8" stroke-width="11"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M132 100L164 128L132 156" fill="none" stroke="#a855f7" stroke-width="11"
+        stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- scanning laser line -->
+  <line x1="72" y1="128" x2="184" y2="128" stroke="url(#beamGrad)" stroke-width="6" stroke-linecap="round"/>
+</svg>

@@ -32,7 +32,7 @@ from .proto import image as I
 from .proto.stream import StreamAssembler
 from .proto.window import WindowParams
 
-DEFAULT_HOST = "0.0.0.0"
+DEFAULT_HOST = "10.10.80.40"
 COMMAND_PORT = 58170
 IMAGE_PORT = 58170
 

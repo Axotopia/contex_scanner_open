@@ -389,6 +389,7 @@ def process_scan_to_stitch(
     order: str = "bed",
     gaps: list[tuple[int, int]] | None = None,
     source_dpi: int = 300,
+    registration_dy: tuple[float, float] | None = None,
     seam_color_blend: bool = False,
     seam_blend_width_px: int = 128,
     seam_blend_strength: float = 0.85,
@@ -423,6 +424,7 @@ def process_scan_to_stitch(
         auto_adjust_margins=auto_adjust,
         gaps=gaps,
         registration_out=channel_registration,
+        registration_dy=registration_dy,
     )
     comp, _names, joins = stitch_cameras(cams, pmeta, order=order)
     comp_width = int(comp.shape[1])
@@ -639,9 +641,16 @@ def _clean_export_prefix(prefix: str) -> str:
     return "".join(c if (c.isalnum() or c in "-_") else "_" for c in (prefix or "scan").strip()).strip("_") or "scan"
 
 
-def render_export_stem(prefix: str, seq: int, digits: int = 4) -> str:
-    """``('scan', 87, 4) -> 'scan_0087'`` (no render suffix)."""
-    return f"{_clean_export_prefix(prefix)}_{max(1, int(seq)):0{max(1, int(digits))}d}"
+def render_export_stem(prefix: str | None, seq: int, digits: int = 4) -> str:
+    """``('scan', 87, 4) -> 'scan_0087'`` (no render suffix).
+
+    ``prefix=None`` means the operator turned the prefix off, so the stem is the
+    bare number (``'0087'``) instead of ``'scan_0087'``.
+    """
+    padded = f"{max(1, int(seq)):0{max(1, int(digits))}d}"
+    if prefix is None:
+        return padded
+    return f"{_clean_export_prefix(prefix)}_{padded}"
 
 
 def export_variant_exists(output_dir: str | Path, stem: str, render_mode: str) -> bool:
@@ -663,7 +672,7 @@ def export_group_taken(output_dir: str | Path, stem: str) -> bool:
 
 def find_free_export_group(
     output_dir: str | Path,
-    prefix: str = "scan",
+    prefix: str | None = "scan",
     start_seq: int = 1,
     digits: int = 4,
 ) -> tuple[str, int]:

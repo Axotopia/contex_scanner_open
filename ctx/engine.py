@@ -28,7 +28,7 @@ from .net import discovery
 from .proto import cdb as proto_cdb
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_SCANNER_IP = "0.0.0.0"
+DEFAULT_SCANNER_IP = "10.10.80.40"
 COMMAND_PORT = 58170
 IMAGE_PORT = 58170
 DISCOVERY_PORT = 58169
@@ -146,6 +146,37 @@ class RawScanCapture:
     raw_rec_bytes: bytes
     transcript: list[dict[str, Any]] = field(default_factory=list)
     cancelled: bool = False
+    #: Set instead of ``raw_rec_bytes`` when the capture was spooled straight to
+    #: disk (``run_live_scan(spool_path=...)``).  The file holds the frame
+    #: payloads concatenated in sequence order -- no 6-byte record headers -- so
+    #: rows are ``size // STRIDE_16BIT_5CAM``.  See :mod:`ctx.banded`.
+    spool_path: str | None = None
+    #: Why a capture stopped short of the end of media, when it did:
+    #: ``"memory_budget"`` means the host refused to keep reading a stream the
+    #: single-pass pipeline could not hold in RAM (see ``max_bytes``).
+    abort_reason: str | None = None
+
+
+def require_manual_recovery(already_ready: bool, recover: bool, state: str | None) -> None:
+    """Refuse to scan when the sheet is mid-path, unless recovery was opted into.
+
+    Media must never move because a scan was requested.  ``unload`` feeds at full
+    roller speed with no tension control, so on long sheets the Unload -> Load
+    cycle walks the media into the side guides and tears it (observed 2026-11-02
+    on a 30 ft sheet).  Recovery is an operator action, watched by hand.
+
+    Kept as a module-level function so this safety rule is unit-tested
+    independently of the socket path.
+    """
+    if already_ready or recover:
+        return
+    raise RuntimeError(
+        f"Media is not at the load position (status {state or 'unknown'}). "
+        "Recover the sheet BY HAND, then start the scan again. "
+        "No paper was moved by this request: the automatic Unload -> Load cycle "
+        "runs `unload` at full speed and can skew or tear long media "
+        "(unbalanced rollers)."
+    )
 
 
 class ScannerEngine:
@@ -393,9 +424,11 @@ class ScannerEngine:
         dpi: int = 300,
         length_inches: float | None = None,
         seconds: float = 25.0,
-        recover: bool = True,
+        recover: bool = False,
         ack_every: int = 1,
         post_scan_eject: str = "hold",
+        spool_path: str | None = None,
+        max_bytes: int | None = None,
         cancel_event: threading.Event | None = None,
         on_progress: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> RawScanCapture:
@@ -404,6 +437,13 @@ class ScannerEngine:
         ``cancel_event`` is checked while arming and while collecting the stream.
         Cancelling stops host reception and releases the command socket; it does
         not command the paper motion (the scanner may finish feeding the sheet).
+
+        ``recover`` defaults to **False and must stay off for real work**.  When
+        media is left mid-path (``0x24``) this call raises instead of moving the
+        sheet, because the Unload -> Load cycle feeds `unload` at full roller
+        speed: on a long sheet that skews it into the side guides and tears it
+        (observed 2026-11-02 on a 30 ft sheet).  Media recovery is a manual,
+        operator-watched action -- ask the user to do it.
         """
         def _notify(stage: str, info: dict[str, Any]) -> None:
             if on_progress is not None:
@@ -419,6 +459,7 @@ class ScannerEngine:
         )
         transcript: list[dict[str, Any]] = []
         cancelled = False
+        abort_reason: str | None = None
         t0 = time.time()
 
         with self._lock:
@@ -446,6 +487,26 @@ class ScannerEngine:
             got: dict[str, int] = {"n": 0, "acks": 0, "naks": 0, "credits": 0}
             stop_ev = threading.Event()
 
+            # Optional disk spool: write payloads in sequence order as they
+            # arrive and keep no record bytes in RAM.  Only out-of-order
+            # stragglers are buffered, so peak memory is a handful of records
+            # instead of the whole sheet (3x the wire stream in the rec path).
+            spool = open(spool_path, "wb", buffering=8 * 1024 * 1024) if spool_path else None
+            spool_pending: dict[int, bytes] = {}
+            spool_state: dict[str, int | None] = {
+                "next": 0, "written": 0, "bytes": 0, "first": None, "last": None,
+            }
+
+            def _spool_flush() -> None:
+                nxt = int(spool_state["next"] or 0)
+                while nxt in spool_pending:
+                    payload = spool_pending.pop(nxt)
+                    spool.write(payload)  # type: ignore[union-attr]
+                    spool_state["bytes"] = int(spool_state["bytes"] or 0) + len(payload)
+                    spool_state["written"] = int(spool_state["written"] or 0) + 1
+                    nxt += 1
+                spool_state["next"] = nxt
+
             def _rx_worker() -> None:
                 expect = 0
                 last_nak_t = 0.0
@@ -462,13 +523,27 @@ class ScannerEngine:
                     got[f"type{ty}"] = got.get(f"type{ty}", 0) + 1
                     if ty != 1:
                         continue
-                    if sq not in frames:
+                    if spool is not None:
+                        nxt = int(spool_state["next"] or 0)
+                        if sq >= nxt and sq not in spool_pending:
+                            payload = d[16:][:dl] if dl else d[16:]
+                            spool_pending[sq] = payload
+                            got["n"] += 1
+                            if spool_state["first"] is None:
+                                spool_state["first"] = sq
+                            last = spool_state["last"]
+                            spool_state["last"] = sq if last is None else max(int(last), sq)
+                            _spool_flush()
+                    elif sq not in frames:
                         frames[sq] = d[16:]
                         dlens[sq] = dl
                         got["n"] += 1
                     got["maxseen"] = max(got.get("maxseen", 0), sq)
-                    while expect in frames:
-                        expect += 1
+                    if spool is not None:
+                        expect = int(spool_state["next"] or 0)
+                    else:
+                        while expect in frames:
+                            expect += 1
                     got["expect"] = expect
                     if sq - got.get("last_ack", -(10**9)) >= max(1, ack_every):
                         try:
@@ -496,9 +571,20 @@ class ScannerEngine:
             rx_thread.start()
 
             try:
-                # 1. Media check & recovery
+                # 1. Media check.  NEVER move media automatically here.
+                #
+                # The Unload -> Load recovery cycle is destructive on long or
+                # heavy sheets: `unload` runs the rollers at scan speed with no
+                # tension control, and with slightly unbalanced rollers a 30 ft
+                # sheet is pulled sideways, skewed and torn (observed
+                # 2026-11-02).  `recover` is therefore opt-in only, and when it
+                # is off we refuse to scan rather than nudge the sheet: even the
+                # arming sequence's `OBJ POS LOAD` rewinds the media to its
+                # leading edge, which is exactly the move that tears it.
                 pre = self._transact_tcp(s, _build_vendor_cdb(0x28, b2=0x80, b8=2, token=True), quiet=0.4)
                 already_ready = bool(pre and len(pre[4]) >= 2 and pre[4][1] == 0x30)
+                if not already_ready and not recover:
+                    require_manual_recovery(already_ready, recover, self.last_status.get("media_state"))
                 if recover and not already_ready:
                     _notify("recovering_media", {"message": "Running Unload -> Load recovery cycle"})
                     self._transact_tcp(s, _build_vendor_cdb(0x31, b1=0x00, token=True), quiet=0.5)
@@ -569,6 +655,20 @@ class ScannerEngine:
                             break
                         time.sleep(0.4)
                         cur_n = got["n"]
+                        if max_bytes and cur_n * 2960 > max_bytes:
+                            # Refuse to keep capturing a sheet the single-pass
+                            # stitch could not hold in RAM.  Stopping here is
+                            # what prevents an OOM kill later, during stitching.
+                            abort_reason = "memory_budget"
+                            _notify(
+                                "over_budget",
+                                {
+                                    "captured_bytes": cur_n * 2960,
+                                    "max_bytes": int(max_bytes),
+                                    "records": cur_n,
+                                },
+                            )
+                            break
                         if cur_n > last_count:
                             last_count = cur_n
                             idle_since = time.time()
@@ -617,6 +717,36 @@ class ScannerEngine:
                 except Exception:
                     pass
 
+        if spool is not None:
+            # Flush any out-of-order tail in sequence order, then report the
+            # capture without ever materialising it in RAM.
+            for sq in sorted(spool_pending):
+                payload = spool_pending[sq]
+                spool.write(payload)
+                spool_state["bytes"] = int(spool_state["bytes"] or 0) + len(payload)
+                spool_state["written"] = int(spool_state["written"] or 0) + 1
+            spool.flush()
+            spool.close()
+            payload_total = int(spool_state["bytes"] or 0)
+            written = int(spool_state["written"] or 0)
+            first, last = spool_state["first"], spool_state["last"]
+            holes = (int(last) - int(first) + 1 - written) if (written and first is not None) else 0
+            return RawScanCapture(
+                source=f"live://{self.host}",
+                width_inches=width_inches,
+                dpi=int(dpi),
+                records_count=written,
+                holes=int(holes),
+                payload_bytes=payload_total,
+                rows=payload_total // STRIDE_16BIT_5CAM,
+                duration_seconds=round(time.time() - t0, 2),
+                raw_rec_bytes=b"",
+                transcript=transcript,
+                cancelled=cancelled,
+                spool_path=spool_path,
+                abort_reason=abort_reason,
+            )
+
         def _eff_len(seq_k: int) -> int:
             dl = dlens.get(seq_k, 0)
             return dl if dl else len(frames[seq_k])
@@ -645,6 +775,7 @@ class ScannerEngine:
             raw_rec_bytes=raw_rec_bytes,
             transcript=transcript,
             cancelled=cancelled,
+            abort_reason=abort_reason,
         )
 
     def load_rec_file(
