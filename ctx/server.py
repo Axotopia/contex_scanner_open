@@ -1273,16 +1273,12 @@ class ScanWorkspaceManager:
                 pass
 
     def list_available_rec_files(self) -> list[dict[str, Any]]:
-        """Find any ``.rec`` capture files under ``analysis/``, ``scans_output/``, or ``W:/contex_scanner``."""
+        """Find any ``.rec`` capture files under the analysis and output directories."""
         found: list[dict[str, Any]] = []
         seen_paths: set[str] = set()
         search_roots = [
             (REPO_ROOT / "engineering" / "analysis", True),
             (Path(self.settings.output_dir), True),
-            (Path("W:/contex_scanner"), False),
-            (Path("/mnt/w/contex_scanner"), False),
-            (Path("W:/Scans_XL"), False),
-            (Path("/mnt/w/Scans_XL"), False),
         ]
         for root_dir, recursive in search_roots:
             try:
