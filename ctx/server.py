@@ -34,6 +34,7 @@ import numpy as np
 from PIL import Image
 from pydantic import BaseModel, Field
 
+from . import __version__
 from .ai import EnhancementOptions
 from .ocr_bridge import OcrBridge, OcrBridgeError, normalize_vision_prompt
 from .vlm import VlmEngine, VlmConfig, DEFAULT_DESCRIBE_PROMPT
@@ -2851,7 +2852,7 @@ def create_app(workspace: ScanWorkspaceManager | None = None) -> FastAPI:
     ws_mgr = workspace or ScanWorkspaceManager()
     app = FastAPI(
         title="Contex HD Ultra i4250s — Ubuntu Scanner Studio & MCP Server",
-        version="1.0.0",
+        version=__version__,
     )
     app.state.workspace = ws_mgr
 

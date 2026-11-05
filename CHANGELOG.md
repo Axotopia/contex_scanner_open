@@ -6,9 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ---
 
-## [2.0.0] — 2026-11-05
+## [0.2.0] — 2026-11-05
 
-Version 2.0.0 is a major milestone release introducing memory-bounded disk streaming for extra-long sheets, native Vision-Language LLM (VLM) auto-describe, physical CIS optical channel registration, hardware safety guards, desktop packaging, and a modernized dark-mode studio WebUI.
+Version 0.2.0 is a major milestone release introducing memory-bounded disk streaming for extra-long sheets, native Vision-Language LLM (VLM) auto-describe, physical CIS optical channel registration, hardware safety guards, desktop packaging, and a modernized dark-mode studio WebUI.
 
 ### Added
 
@@ -72,7 +72,7 @@ Version 2.0.0 is a major milestone release introducing memory-bounded disk strea
 
 ---
 
-## [1.0.0] — 2026-10-28
+## [0.1.0] — 2026-10-28
 
 Initial release of the open-source userspace driver and application for Contex HD Ultra scanners.
 

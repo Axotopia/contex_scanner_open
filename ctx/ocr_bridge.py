@@ -40,6 +40,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
+from . import __version__
+
 logger = logging.getLogger(__name__)
 
 PROTOCOL_VERSION = "2026-07-28"
@@ -241,7 +243,7 @@ class OcrBridge:
                 {
                     "protocolVersion": PROTOCOL_VERSION,
                     "capabilities": {},
-                    "clientInfo": {"name": "open-next", "version": "0.1"},
+                    "clientInfo": {"name": "open-next", "version": __version__},
                 },
                 timeout=30.0,
             )

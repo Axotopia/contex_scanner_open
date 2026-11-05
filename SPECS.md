@@ -869,7 +869,7 @@ fragments — that decoder is discarding half of every record.
 
 ---
 
-## 12. CIS Optical Channel Registration & RGB Row Offset (v2)
+## 12. CIS Optical Channel Registration & RGB Row Offset (v0.2.0)
 
 ### 12.1 Physical sensor geometry & channel displacement
 `[O]` The Contex HD Ultra Contact Image Sensor (CIS) modules read Red, Green, and Blue on physically separate sensor lines spaced along the paper transport axis.
@@ -887,7 +887,7 @@ fragments — that decoder is discarding half of every record.
 
 ---
 
-## 13. Banded Spool Wire Stream & Memory-Bounded Processing (v2)
+## 13. Banded Spool Wire Stream & Memory-Bounded Processing (v0.2.0)
 
 ### 13.1 Wire spooling & memory limits
 `[O]` A 30 ft sheet at 200 DPI generates $\sim 5.9\text{ GB}$ of raw UDP stream records. In single-pass processing, staging raw records, intermediate float32 camera arrays, and stitched 16-bit composites requires $7\text{–}10\times$ RAM ($\approx 40\text{–}60\text{ GB}$), leading to OOM termination on 32 GB workstations.
@@ -905,21 +905,21 @@ fragments — that decoder is discarding half of every record.
 
 ---
 
-## 14. Paper Transport Safety & Error Recovery Protocol (v2)
+## 14. Paper Transport Safety & Error Recovery Protocol (v0.2.0)
 
 ### 14.1 The `0x24 SCANNING` state & roller skew hazard
 `[O]` If a scan is interrupted or an error occurs, the scanner firmware remains in state `0x24 SCANNING` with the document held mid-path in the transport rollers.
 `[CAUTION]` Proprietary vendor software issues an automatic `Unload (0x31, fn=0)` followed by `Load (0x31, fn=1)`. However, `Unload` runs the paper drive at full hardware speed with zero tension feedback. On long ($> 10\text{ ft}$) or heavy bond sheets, minute roller imbalance walks the media diagonally into the mechanical side guides, causing severe creasing and tearing.
 
 ### 14.2 Safe media protocol
-`[D]` In Open.NEXT v2:
+`[D]` In Open.NEXT v0.2.0:
 1. `recover=False` by default in all scan entry points.
 2. If `probe_status` reports `0x24`, the driver immediately aborts and refuses to drive rollers automatically. The operator is instructed to recover the sheet manually.
 3. Paper control commands (`0x31` fn=0 Unload, fn=1 Load, Eject Front `0xFFFFFE`, Eject Rear `0xFFFFFF`) are strictly operator-initiated actions.
 
 ---
 
-## 15. Vision-Language LLM (VLM) & Title-Block Cataloging Protocol (v2)
+## 15. Vision-Language LLM (VLM) & Title-Block Cataloging Protocol (v0.2.0)
 
 ### 15.1 Architecture & integration
 `[D]` Large-format scans are cataloged via direct Vision-Language Models (`ctx/vlm.py`):

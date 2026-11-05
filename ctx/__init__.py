@@ -18,7 +18,7 @@ testable without a scanner. See ``analysis/COMMS-LAYER.md`` for what has been
 verified against recorded traffic and what still needs hardware.
 """
 
-__version__ = "2.0.0"
+__version__ = "0.2.0"
 
 from .errors import (  # noqa: F401
     Action,

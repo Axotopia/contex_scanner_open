@@ -1,4 +1,4 @@
-# Contex HD Ultra i4250s — Open.NEXT v2.0 Studio, Driver, VLM & MCP Server
+# Contex HD Ultra i4250s — Open.NEXT v0.2.0 Studio, Driver, VLM & MCP Server
 
 Modern cross-platform scanner application, Model Context Protocol (MCP) server, and SCSI-over-TCP/UDP driver for the **Contex HD Ultra i4250s** 42-inch 5-camera large-format scanner — built to replace Contex's Windows `.NET` **WIDEsystem** and **Nextimage** applications on **Ubuntu Linux** (with a clean 2-stage path to standalone Linux/Windows desktop packaging).
 
@@ -127,7 +127,7 @@ Review in the viewer ──► Save current view (TIFF / JPG / PDF) ──► Au
 
 ## Naming, OCR & Vision-Language LLM (Auto Describe)
 
-A scan is cataloged and named through visual understanding. Open.NEXT v2.0 features a **built-in Vision-Language LLM (VLM) engine** ([`ctx/vlm.py`](ctx/vlm.py)) that integrates directly with local **Ollama** instances (`qwen2.5vl:3b`, `qwen3-vl:2b/8b`, `glm-ocr`, `llama3.2-vision`) or any OpenAI-compatible multimodal API, alongside the optional external `ocr-md` bridge.
+A scan is cataloged and named through visual understanding. Open.NEXT v0.2.0 features a **built-in Vision-Language LLM (VLM) engine** ([`ctx/vlm.py`](ctx/vlm.py)) that integrates directly with local **Ollama** instances (`qwen2.5vl:3b`, `qwen3-vl:2b/8b`, `glm-ocr`, `llama3.2-vision`) or any OpenAI-compatible multimodal API, alongside the optional external `ocr-md` bridge.
 
 - **Direct Multimodal AI Cataloging**:
   - Automatically downscales large-format scans to 2048 px (preserving full title block and visual legibility).
@@ -430,7 +430,7 @@ The scanner is a **raw sensor, not an imaging device** — it delivers raw 16-bi
 
 | File / Directory | Description |
 |---|---|
-| [`CHANGELOG.md`](CHANGELOG.md) | **Version Changelog** — Complete record of features, improvements and fixes between v1.0 and v2.0 |
+| [`CHANGELOG.md`](CHANGELOG.md) | **Version Changelog** — Complete record of features, improvements and fixes between v0.1.0 and v0.2.0 |
 | [`docs/OCR-VISION-NAMING.md`](docs/OCR-VISION-NAMING.md) | **OCR, Vision & Descriptive Filenames** — shared `ocr-md` MCP module, adoption notes, API/tools and naming rules |
 | [`docs/IMPLEMENTATION-PLAN.md`](docs/IMPLEMENTATION-PLAN.md) | **App Architecture & Implementation Plan** — 2-stage Ubuntu/Windows strategy, workflow diagram, module design |
 | [`DESIGN.md`](DESIGN.md) | **Driver Architecture** — 8-stage pipeline, per-column LUTs, calibration profile schema, flash safety rule |
