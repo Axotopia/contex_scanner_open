@@ -84,3 +84,4 @@ Initial release of the open-source userspace driver and application for Contex H
 - Optional NVIDIA CUDA acceleration via CuPy for 16-bit color transforms.
 - Local AI restoration filters (seam micro-inpainting, background neutralization, shadow chroma denoising).
 - Basic WebUI server and low-level CLI utilities (`ctx discover`, `ctx info`, `ctx plan`, `ctx scan`, `ctx param`, `ctx pcap`).
+
