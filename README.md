@@ -2,7 +2,50 @@
 
 Modern cross-platform scanner application, Model Context Protocol (MCP) server, and SCSI-over-TCP/UDP driver for the **Contex HD Ultra i4250s** 42-inch 5-camera large-format scanner — built to replace Contex's Windows `.NET` **WIDEsystem** and **Nextimage** applications on **Ubuntu Linux** (with a clean 2-stage path to standalone Linux/Windows desktop packaging).
 
+**License:** GNU GPL-3.0 — see [LICENSE](LICENSE).
+
+![Open.NEXT Scanner Studio](docs/images/ONEXT_AI.png)
+
 ---
+
+## Hardware Baseline & Model Compatibility
+
+* **Primary Reference Unit**: Developed and verified on a physical **Contex HD Ultra i4250s** with the **HD color** and **42-inch (5-camera)** scanning modules activated.
+* **Series Compatibility**: The driver dynamically interrogates the scanner's SCSI Vital Product Data (VPD) and capability inquiry pages (`0xC0`–`0xC8`) to automatically query active camera count, optical sensor width, camera physical bed positions, and supported resolution tables. Consequently, the architecture is designed to support or easily adapt to other scanners across the **Contex HD Ultra series** (such as 36", 42", and 44" models, i3650, i4250, i4290, and related wide-format sheetfed units) with minor model-specific geometry or parameter adjustments.
+* **LLM & Agent Ready**: Ships with a native Model Context Protocol (MCP) server allowing AI agents (Claude, Cursor, Antigravity, custom orchestrators) to trigger scans, inspect paper status, adjust color profiles, and run post-processing workflows autonomously.
+
+---
+
+## Architecture: Host Software Processing vs. Proprietary Hardware DSP
+
+This application is an **open-source, host software-based solution** designed to replace the proprietary Contex closed ecosystem (WIDEsystem and Nextimage). Understanding this architectural distinction is key:
+
+### 1. Software-Based Pipeline vs. Scanner Hardware
+* **Proprietary Contex System**: In the OEM workflow, scanner firmware and internal DSP/ASIC hardware perform real-time line-by-line flat-fielding, gain normalization, and camera stitching as paper passes over the glass, or rely on proprietary Windows kernel-mode drivers and closed-source DLLs.
+* **Open.NEXT Host Solution**: This application treats the scanner as a pure raw sensor. It interrogates the existing physical camera states over standard Ethernet, streams uncalibrated, unstitched 16-bit raw sensor data, and executes the entire analysis, normalization, colorimetry, and 5-camera geometric stitching **entirely in software on the host computer**.
+* **Safety First**: All calibration profiles and drift adjustments are computed and stored as software references on the host PC (`~/.config/contex/<serial>/presets/`). The scanner's internal non-volatile EEPROM/flash is strictly guarded against writes (`WRITE BUFFER 0xA0` is unconditionally blocked in [`ctx/proto/cdb.py`](ctx/proto/cdb.py)), eliminating any risk of bricking the hardware.
+
+### 2. Calibration Sheet Requirements & Developer Extensibility
+* **Default Reference**: Out of the box, the built-in calibration wizard is modeled around the official **Contex Calibration Sheet** (`p/n 6779G014`, Charge `R170829`). It requires:
+  1. **Black & White Optical Bands**: Used to calibrate live optical black pedestals ($B_i$) and per-column white-level flat-field profiles ($W_i$) across all 5 cameras.
+  2. **264-Patch ANSI IT8.7/2 Target**: Used to derive the $3\times 3$ colorimetric matrix and gamma curve in CIE Lab / sRGB space ($\Delta E^*_{ab} = 2.30$ median).
+* **Extensible for Any Target**: Because the calibration pipeline is 100% open Python ([`ctx/calibration.py`](ctx/calibration.py)), developers are not locked to Contex sheets. The target grid detection, coordinates, and reference color tables can be readily refactored to accommodate **any third-party or custom calibration sheet** (e.g., standard Kodak/Wolf Faust IT8 targets, X-Rite ColorCheckers, or custom architectural gray step charts).
+
+### 3. Processing Performance: CUDA & Multi-Threading vs. Hardware Speed
+* **Host Optimization**: The processing pipeline includes high-performance multi-threaded CPU routines (NumPy/OpenMP) and optional **NVIDIA CUDA GPU acceleration** (via CuPy for 10–12× faster color transforms).
+* **Speed Trade-off**: Software-based host processing **does not match the instantaneous throughput of dedicated scanner ASIC/FPGA hardware line pre-calibration and stitching**, which operates at line-clock speed during paper travel. A 42" 300 DPI sheet takes ~10–25 seconds of post-scan host computation depending on CPU/GPU power and drift analysis settings.
+* **The Software Advantage**: In exchange for this brief post-scan processing time, you gain complete freedom from vendor lock-in, pristine 16-bit unadulterated raw captures, non-destructive reprocessing, operating-temperature drift correction, and deep integration with modern AI post-processing models.
+
+### 4. Photocraft as an External Generative AI Processing Hook
+* **Neural Post-Processing**: In addition to local algorithmic filters (seam micro-inpainting, bilateral shadow denoising, paper clean-up), the engine features a dedicated processing hook for **Photocraft** ([`ctx/ai.py`](ctx/ai.py)).
+* **How It Works**: When configured via the WebUI **AI & Enhance** tab, REST API (`/api/scans/{id}/enhance`), or MCP tool (`scanner_ai_enhance`), the host pipeline sends a high-fidelity image payload to an external Photocraft HTTP webhook along with prompt instructions.
+* **Seamless Reintegration**: Photocraft performs deep generative restoration (e.g. damaged blueprint reconstruction, severe crease removal, background texturization) and streams the restored image back to the host, where it is converted back to 16-bit, registered as `<scan_id>_AI.<ext>`, and displayed in the viewer with side-by-side or A/B split comparisons.
+* **Auto AI Enhance**: You can enable the **Auto AI Enhance** toggle to have Photocraft run automatically after every scan, fully automating end-to-end scanning, stitching, and neural AI restoration.
+
+![Pre-scan calibration & MCP hook processing](docs/images/calibration_sheet.jpg)
+
+---
+
 
 ## Key Capabilities & End-to-End Scan Workflow
 
@@ -369,7 +412,7 @@ The scanner is a **raw sensor, not an imaging device** — it delivers raw 16-bi
 | [`engineering/analysis/color/COLOR-REPORT.md`](engineering/analysis/color/COLOR-REPORT.md) | **Flat-Field & Drift Report** — per-column calibration math and thermal drift detection |
 | [`ctx/`](ctx/) | **Core Python Package & Application** (`engine.py`, `calibration.py`, `pipeline.py`, `ai.py`, `server.py`, `mcp_server.py`, `web/`) |
 | [`packaging/`](packaging/) | **Ubuntu one-click launcher** — `contex-studio` script, `.desktop` entry, scalable icon, `install.sh` (per-user, no sudo) |
-| [`tests/`](tests/) | Unit and end-to-end workflow test suite (`202` tests, 1 skipped) |
+| [`tests/`](tests/) | Unit and end-to-end workflow test suite (254 tests) |
 | [`engineering/analysis/`](engineering/analysis/) | Key reverse-engineering reports (colour + stitch evidence, kept as the record of how the driver was derived) |
 
 ---
@@ -382,8 +425,18 @@ This project is released under the [GNU GPL-3.0](LICENSE) — fork it, remix it,
 
 ---
 
-## License & Trademark Notice
+## Protocol Provenance, Interoperability & Legal Notice
 
-This project is released under the [GNU GPL-3.0](LICENSE) — fork it, remix it, ship it. Modifications and forks stay open under the same license.
+* **Wire-Level Interoperability**: This driver was developed through independent, black-box network traffic observation (`pktmon` and packet capture) analyzing communication between official vendor software and physical hardware over standard Ethernet (`TCP/UDP 58170`).
+* **Open Community Research**: Protocol framing and SCSI Command Descriptor Block (CDB) definitions were correlated against publicly available community reverse-engineering repositories on GitHub (such as `IvanRolero/WideScan` and `MerlijnWajer/contex-scanning`).
+* **Original Implementation**: No proprietary vendor binaries, decompilers, or closed-source SDK files are distributed within this repository. All application logic, driver code, web UI, calibration algorithms, and AI post-processing pipelines are 100% original Python/JavaScript implementations written for cross-platform functional interoperability.
+* **Trademark Disclaimer**: *Contex*, *HD Ultra*, *Nextimage*, and *WIDEsystem* are trademarks or registered trademarks of Contex A/S. This project is an independent community project and is neither affiliated with nor endorsed by Contex A/S.
+* **Nominative Use**: All marks are used solely for identification and
+  compatibility reference. Open.NEXT is released under the GNU GPL-3.0; forks and
+  modifications remain open under the same license.
 
-**Trademark Notice:** Open.NEXT is an independent open-source project, not affiliated with, sponsored, or endorsed by Contex A/S. Contex, NextImage, and WIDEsystem are trademarks of Contex A/S, used for identification and compatibility reference only.
+---
+
+## Development Credits & Acknowledgments
+
+This application and driver were architected and developed collaboratively in **DeepSeek Harness (DSH)** powered by **DeepSeek** and **GLM**, with additional autonomous engineering, security auditing, and cross-platform verification assistance from **Gemini** in **Google Antigravity**.
