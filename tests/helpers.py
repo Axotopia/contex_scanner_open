@@ -105,7 +105,7 @@ class FakeImageEndpoint:
     def recv(self, timeout=None):
         if not self.queue:
             return None
-        return self.queue.pop(0), ("10.10.80.40", 58171)
+        return self.queue.pop(0), ("10.0.0.40", 58171)
 
 
 # --------------------------------------------------------------- capture building
@@ -140,7 +140,7 @@ def build_pcapng(frames: list[bytes], linktype: int = 1) -> bytes:
 def fragmented_capture(datagrams: list[bytes], *, fragment_size: int = 1480,
                        first_fragment_only: bool = False,
                        duplicate_every: int = 0,
-                       src: str = "10.10.80.40", dst: str = "10.10.80.108",
+                       src: str = "10.0.0.40", dst: str = "10.0.0.108",
                        sport: int = 58171, dport: int = 58170) -> bytes:
     """Build a pcapng of IP-fragmented UDP datagrams, as pktmon records them."""
     frames: list[bytes] = []

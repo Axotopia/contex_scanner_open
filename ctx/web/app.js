@@ -182,7 +182,7 @@ function setPillText(el, text, className) {
 
 function updateHardwareHeader(hw) {
   const ipEl = document.getElementById("hw-ip");
-  if (ipEl) ipEl.textContent = `IP: ${hw.host || appState.settings.scanner_ip || "10.10.80.40"}`;
+  if (ipEl) ipEl.textContent = `IP: ${hw.host || appState.settings.scanner_ip || "0.0.0.0"}`;
   const modelEl = document.getElementById("hw-model");
   if (modelEl) modelEl.textContent = `Model: ${hw.model || "HD Ultra i4250s"}`;
   const snEl = document.getElementById("hw-serial");
@@ -2243,7 +2243,7 @@ function resetVisionPromptToDefault() {
 
 function syncSettingsForm() {
   const s = appState.settings;
-  document.getElementById("set-scanner-ip").value = s.scanner_ip || "10.10.80.40";
+  document.getElementById("set-scanner-ip").value = s.scanner_ip || "0.0.0.0";
   document.getElementById("set-scanner-serial").value = s.scanner_serial || "UNKNOWN";
   document.getElementById("set-drift-policy").value = s.drift_policy || "prompt";
   const driftChk = document.getElementById("scan-drift-enabled");

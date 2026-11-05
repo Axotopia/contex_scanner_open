@@ -431,7 +431,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     def add_device_options(p: argparse.ArgumentParser) -> None:
-        p.add_argument("--ip", default="10.10.80.40", help="scanner address")
+        p.add_argument("--ip", default="0.0.0.0", help="scanner address (or discover via `ctx discover`)")
         p.add_argument("--port", type=int, default=58170, help="command port")
         p.add_argument("--quiet", type=float, default=1.0,
                        help="seconds of silence that ends a reply")

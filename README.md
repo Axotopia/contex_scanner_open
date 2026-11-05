@@ -214,8 +214,16 @@ python3 -m pip install cupy-cuda12x
 ### 2. Launch the Contex Studio WebUI
 
 ```bash
-python3 -m ctx app --bind 127.0.0.1 --http-port 8080 --ip 10.10.80.40
+# Launch with your scanner's IP address (default is 0.0.0.0 placeholder)
+python3 -m ctx app --bind 127.0.0.1 --http-port 8080 --ip <scanner_ip>
 ```
+
+> [!TIP]
+> **Scanner IP Address Configuration & Auto-Detection:**
+> The repository defaults to `0.0.0.0` as an unconfigured placeholder. You can set your scanner's actual LAN IP in any of three ways:
+> 1. **Auto-Discovery**: Run `python3 -m ctx discover` on your local network. It broadcasts a probe (`UDP 58169`) and reports all online Contex scanners, their assigned IP addresses, models, and serial numbers.
+> 2. **WebUI Settings**: Open the WebUI, click **Settings** (top-right gear), enter your scanner's IP in **Scanner IP Address**, and click **Save Settings**.
+> 3. **CLI Argument**: Pass `--ip <your_scanner_ip>` when launching `ctx app`, `ctx scan`, or `ctx info`.
 
 Open **`http://127.0.0.1:8080`** in your browser. The window has three columns:
 
@@ -354,7 +362,7 @@ In addition to `ctx app` and `ctx mcp`, the command-line tool provides direct pr
 
 ```bash
 python3 -m ctx discover                     # UDP 58169 broadcast discovery
-python3 -m ctx info --ip 10.10.80.40        # Read-only INQUIRY + VPD capability pages
+python3 -m ctx info --ip 0.0.0.0             # Read-only INQUIRY + VPD capability pages (placeholder IP)
 python3 -m ctx plan --dpi 300 --width-in 42 # Print the command sequence without I/O
 python3 -m ctx scan --out scan-name         # Run a low-level scan to .bin + .jsonl
 python3 -m ctx param --buffer 0xbf          # READ BUFFER parameter block dump

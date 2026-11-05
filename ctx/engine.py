@@ -28,7 +28,7 @@ from .net import discovery
 from .proto import cdb as proto_cdb
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_SCANNER_IP = "10.10.80.40"
+DEFAULT_SCANNER_IP = "0.0.0.0"
 COMMAND_PORT = 58170
 IMAGE_PORT = 58170
 DISCOVERY_PORT = 58169

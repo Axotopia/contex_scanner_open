@@ -11,14 +11,14 @@
 #
 # Configuration (environment):
 #   CONTEX_STUDIO_DIR   app checkout (default: two levels above this script)
-#   CONTEX_SCANNER_IP   scanner address (default: 10.10.80.40)
+#   CONTEX_SCANNER_IP   scanner address (default: 0.0.0.0)
 #   CONTEX_PORT         preferred HTTP port (default: 8080)
 set -uo pipefail
 
 SELF="$(readlink -f "${BASH_SOURCE[0]}")"
 APP_DIR="${CONTEX_STUDIO_DIR:-$(cd "$(dirname "$SELF")/.." && pwd)}"
 HOST=127.0.0.1
-SCANNER_IP="${CONTEX_SCANNER_IP:-10.10.80.40}"
+SCANNER_IP="${CONTEX_SCANNER_IP:-0.0.0.0}"
 PORT="${CONTEX_PORT:-8080}"
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/contex-studio"
 LOG="$STATE_DIR/app-$(date +%F).log"

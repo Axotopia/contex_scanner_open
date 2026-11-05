@@ -68,7 +68,7 @@ class LiveDevice(unittest.TestCase):
         self.assertEqual(vpd.firmware, "3-5-1-015")
         self.assertEqual(vpd.serial, "57947")
         self.assertEqual(vpd.mac, "00-08-C3-00-1F-26")
-        self.assertEqual(vpd.ip, "10.10.80.40")
+        self.assertEqual(vpd.ip, "10.0.0.40")
         self.assertEqual(vpd.station, "70-SUN-A09")
         self.assertEqual(vpd.vendor, "Contex")
         self.assertEqual(vpd.product, "HD Ultra i4250s")

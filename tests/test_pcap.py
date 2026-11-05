@@ -92,7 +92,7 @@ class Reassembly(unittest.TestCase):
         udp = struct.pack(">HHHH", 58171, 58170, 8 + len(datagram), 0) + datagram
         parts = [udp[i:i + 1480] for i in range(0, len(udp), 1480)]
         frames = [
-            ethernet_ipv4_udp("10.10.80.40", "10.10.80.108", 58171, 58170, 1,
+            ethernet_ipv4_udp("10.0.0.40", "10.0.0.108", 58171, 58170, 1,
                               part * 1480, part < len(parts) - 1, chunk)
             for part, chunk in enumerate(parts) if part != 0
         ]

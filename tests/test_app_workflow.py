@@ -477,8 +477,8 @@ class EngineSafetyAndServerAPITests(unittest.TestCase):
                 self.assertIn(cdb_bytes[2], proto_cdb.SAFE_WRITE_BUFFER_IDS)
 
     def test_network_preflight(self) -> None:
-        pf = check_network_preflight("10.10.80.40")
-        self.assertEqual(pf["scanner_ip"], "10.10.80.40")
+        pf = check_network_preflight("10.0.0.40")
+        self.assertEqual(pf["scanner_ip"], "10.0.0.40")
 
     def test_defaults_and_paper_orientation(self) -> None:
         # Product defaults: live hardware, architectural-neutral preset.
