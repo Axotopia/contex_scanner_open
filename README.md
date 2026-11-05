@@ -4,7 +4,7 @@ Modern cross-platform scanner application, Model Context Protocol (MCP) server, 
 
 **License:** GNU GPL-3.0 — see [LICENSE](LICENSE).
 
-![Open.NEXT Scanner Studio](docs/images/ONEXT_AI.png)
+![Open.NEXT Scanner Studio](docs/images/ONEXT_A-B.png)
 
 ---
 
